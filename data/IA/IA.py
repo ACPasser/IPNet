@@ -6,19 +6,19 @@ import pandas as pd
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '../../'))
 sys.path.append(project_root) # 添加根目录到sys.path，让Python能找到data/util
-from data.util import trans_id, cut_snapshots_by_month, gen_uniform_snapshots, save_node_set
+from data.util import trans_id, cut_snapshots_by_month, gen_uniform_snapshots, save_node_set, read_file_with_normalized_whitespace
     
 if __name__ == '__main__':
     # 配置项
     CONFIG = {
-        "input_file_path": "data/UCI/0.origin/graph.txt",
-        "output_graph_path": "data/UCI/0.origin/graph.csv",
-        "output_snap_dir": "data/UCI/1.snapshots",
-        "output_node_dir": "data/UCI/1.nodes_set",
+        "input_file_path": "data/IA/0.origin/graph.txt",
+        "output_graph_path": "data/IA/0.origin/graph.csv",
+        "output_snap_dir": "data/IA/1.snapshots",
+        "output_node_dir": "data/IA/1.nodes_set",
         "csv_sep": "\t",          # 文件分隔符
         "time_col": "time",       # 时间戳列名
         "date_format": "%Y-%m",   # 日期格式化
-        "skip_rows": 2,           # 跳过行数
+        "skip_rows": 0,           # 跳过行数
         "col_names": ['from_id', 'to_id', 'weight', 'time'],  # 列名映射
         "train_ratio": 0.5,       # 训练集比例
         "snapshots_num": 5        # 训练集快照数量
@@ -26,13 +26,18 @@ if __name__ == '__main__':
 
     # 1. 读取原始数据
     try:
-        df = pd.read_csv(
-            CONFIG["input_file_path"],
-            sep=' ',
-            header=None,
-            skiprows=CONFIG["skip_rows"],
-            names=CONFIG["col_names"],
-            dtype=str
+        # df = pd.read_csv(
+        #     CONFIG["input_file_path"],
+        #     sep=' ',
+        #     header=None,
+        #     skiprows=CONFIG["skip_rows"],
+        #     names=CONFIG["col_names"],
+        #     dtype=str
+        # )
+        df = read_file_with_normalized_whitespace(
+            file_path=CONFIG["input_file_path"],
+            skip_rows=CONFIG["skip_rows"],
+            col_names=CONFIG["col_names"]
         )
         print(f"✅ 成功读取原始数据: {CONFIG['input_file_path']} (行数: {len(df)})")
         # 转换节点ID
@@ -50,22 +55,22 @@ if __name__ == '__main__':
     # 2. 按月切分快照（用于baseline）
     try:
         # 按月切割快照（全量数据）
-        cut_snapshots_by_month(
-            df=df,
-            output_snap_dir=CONFIG["output_snap_dir"],
-            time_col=CONFIG["time_col"],
-            date_format=CONFIG["date_format"],
-            sep=CONFIG["csv_sep"]
-        )
-        
-        # 均匀切割快照（训练集）
-        # gen_uniform_snapshots(
+        # cut_snapshots_by_month(
         #     df=df,
-        #     output_snap_dir=os.path.join(CONFIG["output_snap_dir"], "train_uniform"),
-        #     train_ratio=CONFIG["train_ratio"],
-        #     snapshots_num=CONFIG["snapshots_num"],
+        #     output_snap_dir=CONFIG["output_snap_dir"],
+        #     time_col=CONFIG["time_col"],
+        #     date_format=CONFIG["date_format"],
         #     sep=CONFIG["csv_sep"]
         # )
+        
+        # 均匀切割快照（训练集）
+        gen_uniform_snapshots(
+            df=df,
+            output_snap_dir=os.path.join(CONFIG["output_snap_dir"], "train_uniform"),
+            train_ratio=CONFIG["train_ratio"],
+            snapshots_num=CONFIG["snapshots_num"],
+            sep=CONFIG["csv_sep"]
+        )
         
     except Exception as e:
         raise RuntimeError(f"生成快照文件失败：{str(e)}") from e

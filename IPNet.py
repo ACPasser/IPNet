@@ -1,382 +1,966 @@
 import os
+from typing import Optional
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 
-class TimeEncode(torch.nn.Module):
-    def __init__(self, layers, enc_dim):
-        super(TimeEncode, self).__init__()
-        self.layers = layers
-        self.time_dim = enc_dim
+def init_weights(m: nn.Module):
+    """参数统一初始化"""
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+    elif isinstance(m, (nn.LSTM, nn.GRU)):
+        for name, param in m.named_parameters():
+            if 'weight' in name:
+                nn.init.xavier_normal_(param)
+            elif 'bias' in name:
+                nn.init.constant_(param, 0.0)
+
+
+class InteractionSequenceEncoder(nn.Module):
+    '''对「节点交互序列」进行时间 / 位置编码，生成特征'''
+    def __init__(
+            self, 
+            node_num: int,
+            time_dim: int, 
+            pos_dim: int, 
+            node_interactions: dict[int, list[tuple[int, float]]], 
+            specified_seq_len: Optional[int] = None,
+            padding_node: int = 0,
+            dropout_p: float = 0.1,
+            device: torch.device = torch.device('cpu')
+        ):
+        super().__init__()
+        self.node_num = node_num
+        self.time_dim = time_dim
+        self.pos_dim = pos_dim
+        self.dropout_p = dropout_p
+        self.device = device
+        self.padding_node = padding_node
+
+        if specified_seq_len is not None:
+            self.seq_len = specified_seq_len
+        else:
+            self.seq_len = max(len(seq) for seq in node_interactions.values()) # 默认取最长，不足的padding
+        self.node_interactions = self._pad_interactions(node_interactions)
         
-        self.node_time_map = {}
-        
-        self.basis_freq = torch.nn.Parameter((torch.from_numpy(1 / 10 ** np.linspace(0, 9, self.time_dim))).float())
-        self.phase = torch.nn.Parameter(torch.zeros(self.time_dim).float())
+        # --------------------------- 时间编码 ---------------------------
+        self.time_tensor = torch.zeros(
+            (self.node_num, self.seq_len),
+            dtype=torch.float32,
+            device=self.device
+        )
+        self._init_time_tensor()
+
+        # 双频率基（增强时间特征区分度）
+        self.basis_freq1 = nn.Parameter(
+            torch.from_numpy(1 / 10 ** np.linspace(0, 9, self.time_dim//2)).float().to(device)
+        )
+        self.basis_freq2 = nn.Parameter(
+            torch.from_numpy(1 / np.exp(np.linspace(0, 5, self.time_dim//2))).float().to(device)
+        )
+        self.phase = nn.Parameter(torch.zeros(self.time_dim).float().to(device))
+
+        # 时间特征门控融合（减少噪声）
+        self.time_gate = nn.Sequential(
+            nn.Linear(self.time_dim, self.time_dim),
+            nn.Sigmoid(),
+            nn.Dropout(dropout_p)
+        ).to(device)
+        self.time_gate.apply(init_weights)
+
+        # --------------------------- 位置编码 ---------------------------
+        self.pos_tensor = torch.zeros(
+            (self.node_num, self.seq_len, self.seq_len),
+            dtype=torch.float32,
+            device=self.device
+        )
+        self._init_pos_tensor()
+
+        self.trainable_embedding = nn.Sequential(
+            nn.Linear(self.seq_len, self.pos_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.pos_dim),
+            nn.Linear(self.pos_dim, self.pos_dim)
+        ).to(device)
+        self.trainable_embedding.apply(init_weights)
     
-    def init_node_time_map(self, node_interaction_seq):
-        # initialize internal data structure to index node positions
-        if self.time_dim == 0:
-            return
-        for node in node_interaction_seq:
-            self.node_time_map[node] = np.zeros(self.layers, dtype=np.float32)
-        
-        for node, neighbors_with_time in node_interaction_seq.items():
-            for index, (_, timestamp) in enumerate(neighbors_with_time):
-                if index >= self.layers:
-                    break
-                self.node_time_map[node][index] = timestamp
-
-
-    def forward(self, times_tensor):
-        # ts: [N, L]
-        batch_size = times_tensor.size(0)
-        seq_len = times_tensor.size(1)
-
-        times_tensor = times_tensor.view(batch_size, seq_len, 1)  # [N, L, 1]
-        map_ts = times_tensor * self.basis_freq.view(1, 1, -1)  # [N, L, time_dim]
-        map_ts += self.phase.view(1, 1, -1)
-
-        harmonic = torch.cos(map_ts)
-
-        return harmonic  # self.dense(harmonic)
-    
-class PositionEncoder(torch.nn.Module):
-    def __init__(self, layers, enc_dim):
-        super(PositionEncoder, self).__init__()
-        self.layers = layers
-        self.enc_dim = enc_dim
-        
-        self.node_pos_enc = {}
-        
-        # landing prob at [0, 1, ... num_layers]
-        self.trainable_embedding = torch.nn.Sequential(torch.nn.Linear(in_features=self.layers, out_features=self.enc_dim), 
-                                                       torch.nn.ReLU(),
-                                                       torch.nn.Linear(in_features=self.enc_dim, out_features=self.enc_dim))
-        
-    
-    def init_node_pos_map(self, node_interaction_seq, node_feat):
-        # initialize internal data structure to index node positions
-        if self.enc_dim == 0:
-            return
-        node_pos_map = {}
-        for node in node_interaction_seq:
-            node_pos_map[node] = np.zeros(self.layers, dtype=np.float32)
-            # self.node_pos_map[node][0] = 1   # 将0号位置设为1
-            self.node_pos_enc[node] = np.zeros((self.layers, self.layers), dtype=np.float32)
-        for _, neighbors_with_time in node_interaction_seq.items():
-            for index, (neighbor, _) in enumerate(neighbors_with_time):
-                if index >= self.layers:
-                    break
-                node_pos_map[neighbor][index] += 1
-                
-        for node, neighbors_with_time in node_interaction_seq.items():
-            for index, (neighbor, _) in enumerate(neighbors_with_time):
-                if index >= self.layers:
-                    break
-                self.node_pos_enc[node][index] = node_pos_map[neighbor]
-        
-        # 去除匿名化策略
-        # for node in node_interaction_seq:
-        #     self.node_pos_enc[node] = np.zeros((self.layers, self.enc_dim), dtype=np.float32)
+    def _pad_interactions(self, node_interactions: dict[int, list[tuple[int, float]]]) -> dict[int, list[tuple[int, float]]]:
+        """
+        Args:
+            node_interactions: 原始交互序列字典 {节点ID: [(邻居ID, 时间戳), ...]}
+        Returns:
+            经过padding的交互序列字典
+        """
+        padded_interactions = {}
+        for node_id, interactions in node_interactions.items():
+            current_len = len(interactions)
             
-        # for node, neighbors_with_time in node_interaction_seq.items():
-        #     for index, (neighbor, _) in enumerate(neighbors_with_time):
-        #         if index >= self.layers:
-        #             break
-        #         self.node_pos_enc[node][index] = node_feat[neighbor]
-                    
-    def forward(self, pos_tensor):  
-        return self.trainable_embedding(pos_tensor)
-    
-class CausalityTimeEncode(torch.nn.Module):
-    def __init__(self, seq_num, layers, enc_dim):
-        super(CausalityTimeEncode, self).__init__()
-        self.seq_num = seq_num
-        self.layers = layers
-        self.time_dim = enc_dim
-        
-        self.node_time_map = {}
-        
-        self.basis_freq = torch.nn.Parameter((torch.from_numpy(1 / 10 ** np.linspace(0, 9, self.time_dim))).float())
-        self.phase = torch.nn.Parameter(torch.zeros(self.time_dim).float())
-    
-    def init_node_time_map(self, node_causality_seq_list):
-        # initialize internal data structure to index node positions
-        for node in node_causality_seq_list:
-            self.node_time_map[node] =np.zeros((self.seq_num, self.layers), dtype=np.float32)
+            if current_len == self.seq_len:
+                # 直接保留
+                padded_interaction = interactions
+            elif current_len < self.seq_len:
+                # 已按时间倒序排列，在结尾padding
+                pad_num = self.seq_len - current_len
+                base_ts = interactions[-1][1] if current_len > 0 else 0.0
+                pad = [(self.padding_node, base_ts) for _ in range(pad_num)]
+                padded_interaction = interactions + pad
+            else:
+                # 截断策略：保留最近的交互
+                padded_interaction = interactions[:self.seq_len]
             
-        for node, node_causality_seq in node_causality_seq_list.items():
-            for i in range(min(len(node_causality_seq), self.seq_num)):
-                max_timestamp = node_causality_seq[i][-1][1]
-                for index, (_, timestamp) in enumerate(node_causality_seq[i]):
-                    if index >= self.layers:
-                        break
-                    if index == 0:
-                        self.node_time_map[node][i][index] = 0
-                    else:
-                        self.node_time_map[node][i][index] = timestamp - self.node_time_map[node][i][index - 1]
-
-
-    def forward(self, times_tensor):
-        # ts: [N, S, L]
-        batch_size = times_tensor.size(0)
-        times_tensor = times_tensor.view(batch_size, self.seq_num, self.layers, 1)  # [N, S, L, 1]
-        map_ts = times_tensor * self.basis_freq.view(1, 1, 1, -1)  # [N, S, L, time_dim]
-        map_ts += self.phase.view(1, 1, 1, -1)
-
-        harmonic = torch.cos(map_ts)
-
-        return harmonic  # self.dense(harmonic)
-    
-
-class CausalityPositionEncoder(torch.nn.Module):
-    def __init__(self, seq_num, layers, enc_dim):
-        super(CausalityPositionEncoder, self).__init__()
-        self.seq_num = seq_num
-        self.layers = layers
-        self.enc_dim = enc_dim
+            padded_interactions[node_id] = padded_interaction
         
-        self.node_pos_enc = {}
-        
-        # landing prob at [0, 1, ... num_layers]
-        self.trainable_embedding = torch.nn.Sequential(torch.nn.Linear(in_features=self.layers, out_features=self.enc_dim), 
-                                                       torch.nn.ReLU(),
-                                                       torch.nn.Linear(in_features=self.enc_dim, out_features=self.enc_dim))
-        
-    
-    def init_node_pos_map(self, node_causality_seq_list, node_feat):
-        # initialize internal data structure to index node positions
-        node_pos_map = {}
-        for node in node_causality_seq_list:
-            node_pos_map[node] = np.zeros(self.layers, dtype=np.float32)
-            # self.node_pos_map[node][0] = 1   # 将0号位置设为1
-            self.node_pos_enc[node] = np.zeros((self.seq_num, self.layers, self.layers), dtype=np.float32)
+        return padded_interactions
 
-        for _, node_causality_seq in node_causality_seq_list.items():
-            for neighbors_with_time in node_causality_seq:
-                for index, (neighbor, _) in enumerate(neighbors_with_time):
-                    if index >= self.layers:
-                        break
-                    node_pos_map[neighbor][index] += 1
-                
-        for node, node_causality_seq in node_causality_seq_list.items():
-            for i in range(min(len(node_causality_seq), self.seq_num)):
-                for index, (neighbor, _) in enumerate(node_causality_seq[i]):
-                    if index >= self.layers:
-                        break
-                    self.node_pos_enc[node][i][index] = node_pos_map[neighbor]
+    def _init_time_tensor(self):
+        for node_id, seq in self.node_interactions.items():
+            ts_list = [interaction[1] for interaction in seq]
+            self.time_tensor[node_id] = torch.tensor(ts_list, dtype=torch.float32, device=self.device)
 
-        # 去除匿名化策略
-        # for node in node_causality_seq_list:
-        #     self.node_pos_enc[node] = np.zeros((self.seq_num, self.layers, self.enc_dim), dtype=np.float32)
-            
-        # for node, node_causality_seq in node_causality_seq_list.items():
-        #     for i in range(min(len(node_causality_seq), self.seq_num)):
-        #         for index, (neighbor, _) in enumerate(node_causality_seq[i], 1):
-        #             if index >= self.layers:
-        #                 break
-        #             self.node_pos_enc[node][i][index] = node_feat[neighbor]
-                    
-    def forward(self, pos_tensor):  
-        return self.trainable_embedding(pos_tensor)
+        # 填充归一化∆t [node_num, seq_len-1]
+        time_diff = self.time_tensor[:, :-1] - self.time_tensor[:, 1:]
+        # [node_num, 1]
+        time_span = (self.time_tensor[:, 0:1] - self.time_tensor[:, -1:]) + 1e-8
+
+        normed_diff = time_diff / time_span
+        normed_diff = torch.clamp(normed_diff, min=-1.0, max=1.0)
+        
+        # [node_num, seq_len]
+        self.time_tensor[:, :-1] = normed_diff
+        self.time_tensor[-1:, -1] = 0.0
     
-class FeatureEncoder(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, rnn_type='GRU', dropout_p=0.1):
-        super(FeatureEncoder, self).__init__()
+    def _init_pos_tensor(self):
+        '''填充归一化位置计数'''
+        # node_pos_counter = {}
+        # for node in self.node_interactions:
+        #     node_pos_counter[node] = np.zeros(self.seq_len, dtype=np.float32)
+        # node_pos_counter[self.padding_node] = np.zeros(self.seq_len, dtype=np.float32)
+        node_pos_counter = np.zeros((self.node_num, self.seq_len), dtype=np.float32)
+
+        # 统计节点在交互序列中各位置的出现次数
+        for _, seq in self.node_interactions.items():
+            for seq_idx in range(self.seq_len):
+                node, _ = seq[seq_idx]
+                node_pos_counter[node][seq_idx] += 1
+        
+        for node, seq in self.node_interactions.items():
+            for seq_idx in range(self.seq_len):
+                self.pos_tensor[node, seq_idx, :] = torch.tensor(node_pos_counter[node], dtype=torch.float32, device=self.device)
+
+
+    def _encode_time(self, nodes: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            nodes: [batch] 节点ID张量
+        Returns:
+            [B, L, TD] 交互时间编码特征
+        """
+        batch_size = nodes.shape[0]
+        times_tensor = self.time_tensor[nodes]  # [B, L]
+        times_tensor = times_tensor.view(batch_size, self.seq_len, 1)
+
+        # 双频率编码
+        freq1 = times_tensor * self.basis_freq1.view(1, 1, -1)
+        freq2 = times_tensor * self.basis_freq2.view(1, 1, -1)
+        map_ts = torch.cat([torch.cos(freq1 + self.phase[:self.time_dim//2]), 
+                            torch.sin(freq2 + self.phase[self.time_dim//2:])], dim=-1)
+        
+        # 门控融合
+        gate = self.time_gate(map_ts)
+        map_ts = map_ts * gate + map_ts.detach() * (1 - gate)  # 残差门控
+        
+        map_ts = F.layer_norm(map_ts, map_ts.shape[1:])  # 增加层归一化
+        map_ts = F.dropout(map_ts, p=self.dropout_p, training=self.training)
+        return map_ts
+  
+    def _encode_pos(self, nodes: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            nodes: [batch] 节点ID张量
+        Returns:
+            [B, L, pos_dim] 位置编码特征
+        """
+        # [B, L, L]
+        pos_tensor_batch = self.pos_tensor[nodes]
+        
+        # 重塑维度以适配嵌入层：[B×L, L]
+        batch_shape = pos_tensor_batch.shape
+        pos_reshaped = pos_tensor_batch.reshape(-1, self.seq_len)
+
+        # 过嵌入层：[B×L, pos_dim]
+        pos_encoded = self.trainable_embedding(pos_reshaped)
+        
+        # 恢复原始维度：[B, L, pos_dim]
+        pos_encoded = pos_encoded.reshape(batch_shape[0], batch_shape[1], self.pos_dim)
+
+        pos_encoded = F.layer_norm(pos_encoded, pos_encoded.shape[1:])
+        pos_encoded = F.dropout(pos_encoded, p=self.dropout_p, training=self.training)
+        return pos_encoded
+
+    def forward(self, nodes: torch.Tensor, return_separate: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        前向传播：融合时间+位置编码
+        Args:
+            nodes: [batch] 节点ID张量
+            return_separate: 是否返回分离的时间/位置特征（默认返回拼接后的融合特征）
+        Returns:
+            如果return_separate=True: (time_feat, pos_feat)
+            否则: 拼接后的融合特征 [B, L, time_dim+pos_dim]
+        """
+        time_feat = self._encode_time(nodes)  # [B, L, time_dim]
+        pos_feat = self._encode_pos(nodes)    # [B, L, pos_dim]
+        
+        if return_separate:
+            return time_feat, pos_feat
+        else:
+            # 拼接融合时间+位置特征
+            fusion_feat = torch.cat([time_feat, pos_feat], dim=-1)
+            return fusion_feat
+
+class SequenceFeatureAggregator(nn.Module):
+    '''对序列编码特征进行聚合，生成节点级全局特征'''
+    def __init__(
+            self, 
+            input_dim: int, 
+            hidden_dim: int, 
+            rnn_type: str = 'GRU', 
+            dropout_p: float = 0.1, 
+            device: torch.device = torch.device('cpu')
+        ):
+        super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.hidden_dim_one_direction = self.hidden_dim // 2
-        self.rnn_type = rnn_type
-        self.model_dim = self.hidden_dim_one_direction * 2  # notice that we are using bi-lstm
-        if self.model_dim == 0:  # meaning that this encoder will be useless
-            return
+        self.rnn_type = rnn_type.upper()
+        assert self.rnn_type in ['LSTM', 'GRU'], f"RNN类型仅支持LSTM/GRU, 当前为{self.rnn_type}"
+        self.device = device
         
-        assert self.rnn_type in ['LSTM', 'GRU']
+        # 构建RNN（统一设备）
         if self.rnn_type == 'LSTM':
-            self.rnn = torch.nn.LSTM(input_size=self.input_dim, hidden_size=self.hidden_dim_one_direction,
-                                    batch_first=True, bidirectional=True)
+            self.rnn = nn.LSTM(
+                input_size=self.input_dim,
+                hidden_size=self.hidden_dim_one_direction,
+                batch_first=True,
+                bidirectional=True
+            ).to(self.device)
         else:
-            self.rnn = torch.nn.GRU(input_size=self.input_dim, hidden_size=self.hidden_dim_one_direction,
-                                    batch_first=True, bidirectional=True)
-            
-        self.dropout = torch.nn.Dropout(dropout_p)
+            self.rnn = nn.GRU(
+                input_size=self.input_dim,
+                hidden_size=self.hidden_dim_one_direction,
+                batch_first=True,
+                bidirectional=True
+            ).to(self.device)
+        
+        self.dropout = nn.Dropout(dropout_p).to(self.device)
+        # 统一初始化
+        self.apply(init_weights)
 
-    def forward(self, X):
-        encoded_features = self.rnn(X)[0]
-        encoded_features = encoded_features.select(dim=1, index=0)
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            X: [B, L, D] 输入特征
+        Returns:
+            [B, D] 编码后的特征
+        """
+        X = F.layer_norm(X, normalized_shape=(self.input_dim,)).to(self.device)
+        encoded_features, _ = self.rnn(X)
+        
+        # 方式1. 取第一个时间步
+        # encoded_features = encoded_features[:, 0, :]
+        # 方式2. 取所有时间步的均值，保留完整序列信息
+        encoded_features = encoded_features.mean(dim=1)
         encoded_features = self.dropout(encoded_features)
         return encoded_features
+            
+class ContextEncoder(nn.Module):
+    """上下文编码器（时间+位置编码）"""
+    def __init__(
+            self,
+            nodes_num: int,
+            time_dim: int, 
+            pos_dim: int, 
+            contexts: dict[int, list[list[tuple[int, float]]]],
+            specified_walk_len: Optional[int] = None,
+            padding_node: int = 0,
+            dropout_p: float = 0.1, 
+            device: torch.device = torch.device('cpu')
+        ):
+        super().__init__()
+        self.node_num = nodes_num
+        self.time_dim = time_dim
+        self.pos_dim = pos_dim
+        self.padding_node = padding_node
+        self.dropout_p = dropout_p
+        self.device = device
 
-class CausalityFeatureEncoder(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, version='mean', rnn_type='GRU', dropout_p=0.5):
-        super(CausalityFeatureEncoder, self).__init__()
+        # 确定游走参数（所有节点轮数/长度一致）
+        self.walk_num = len(next(iter(contexts.values())))  # 所有节点轮数一致
+        if specified_walk_len is not None:
+            self.walk_len = specified_walk_len
+        else:
+            self.walk_len = max(len(walk) for walks in contexts.values() for walk in walks) # 取最长，不足的padding
+        self.contexts = self._pad_contexts(contexts)
+
+        # --------------------------- 时间编码相关 ---------------------------
+        self.time_tensor = torch.zeros(
+            (self.node_num, self.walk_num, self.walk_len),
+            dtype=torch.float32,
+            device=self.device
+        )
+
+        # 双频率基（增强时间特征区分度）
+        self.basis_freq1 = nn.Parameter(
+            torch.from_numpy(1 / 10 ** np.linspace(0, 9, self.time_dim//2)).float().to(device)
+        )
+        self.basis_freq2 = nn.Parameter(
+            torch.from_numpy(1 / np.exp(np.linspace(0, 5, self.time_dim//2))).float().to(device)
+        )
+        self.phase = nn.Parameter(torch.zeros(self.time_dim).float().to(device))
+        
+        # 时间特征门控融合（减少噪声）
+        self.time_gate = nn.Sequential(
+            nn.Linear(self.time_dim, self.time_dim),
+            nn.Sigmoid(),
+            nn.Dropout(dropout_p)
+        ).to(device)
+        self.time_gate.apply(init_weights)
+        
+        # --------------------------- 位置编码相关 ---------------------------
+        self.pos_tensor = torch.zeros(
+            (self.node_num, self.walk_num, self.walk_len, self.walk_len),
+            dtype=torch.float32,
+            device=self.device
+        )
+
+        self.trainable_embedding = nn.Sequential(
+            nn.Linear(self.walk_len, self.pos_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.pos_dim),
+            nn.Linear(self.pos_dim, self.pos_dim)
+        ).to(device)
+        self.trainable_embedding.apply(init_weights)
+
+        # 初始化时间/位置编码
+        self._init_time_tensor()
+        self._init_pos_tensor()
+
+    def _pad_contexts(self, contexts: dict[int, list[list[tuple[int, float]]]]) -> dict[int, list[list[tuple[int, float]]]]:
+        """
+        对contexts中的游走序列进行padding, 确保所有walk长度等于target_walk_len
+        截断时适配双向时序游走逻辑: 从中心节点向两侧裁剪，保证中心节点位置不变
+        Args:
+            contexts: 原始上下文字典 {节点ID: [多轮游走列表]}
+            target_walk_len: 目标游走长度
+        Returns:
+            经过padding的上下文字典
+        """
+        padded_contexts = {}
+        for node_id, walk_list in contexts.items():
+            padded_walk_list = []
+            
+            for walk in walk_list:
+                current_len = len(walk)
+                if current_len == self.walk_len:
+                    # 直接保留
+                    padded_walk = walk
+                elif current_len < self.walk_len:
+                    # 补齐，contexts已默认按时间升序排列，在开头进行padding
+                    pad_num = self.walk_len - current_len
+                    pad = [(self.padding_node,  walk[0][1]) for _ in range(pad_num)] # 以第一步时间戳为基准进行padding
+                    padded_walk = pad + walk
+                else:
+                    # 从中心向两侧裁剪
+                    center_idx = len(walk) // 2
+                    half_len = self.walk_len // 2
+                    start_idx = max(0, center_idx - half_len)
+                    end_idx = min(len(walk), center_idx + half_len + 1)
+                    padded_walk = walk[start_idx : end_idx]
+                    # 若截取后不足，再补
+                    if len(padded_walk) < self.walk_len:
+                        pad_num = self.walk_len - len(padded_walk)
+                        base_ts = padded_walk[0][1]
+                        pad = [(self.padding_node, base_ts) for _ in range(pad_num)]
+                        padded_walk = pad + padded_walk
+                
+                padded_walk_list.append(padded_walk)
+            
+            padded_contexts[node_id] = padded_walk_list
+        
+        return padded_contexts
+
+    def _init_time_tensor(self):
+        # 填充归一化∆t
+        for node_id, window in self.contexts.items():
+            ts_batch = []
+            for i in range(self.walk_num):
+                walk = window[i]
+                ts = torch.tensor([w[1] for w in walk], dtype=torch.float32, device=self.device)
+                ts_batch.append(ts)
+
+            # [walk_num, walk_len]
+            ts_batch = torch.stack(ts_batch)
+            
+            # [walk_num, walk_len-1]
+            time_diff = ts_batch[:, 1:] - ts_batch[:, :-1]
+            
+            # [walk_num, 1]
+            time_span = (ts_batch[:, -1] - ts_batch[:, 0]).unsqueeze(-1) + 1e-8
+            normed_diff = time_diff / time_span
+            normed_diff = torch.clamp(normed_diff, min=-1.0, max=1.0)
+
+            self.time_tensor[node_id, :self.walk_num, 0] = 0.0
+            self.time_tensor[node_id, :self.walk_num, 1:] = normed_diff
+    
+    def _init_pos_tensor(self):
+        '''填充归一化位置计数'''
+        node_pos_counter = {}
+        for node in self.contexts:
+            node_pos_counter[node] = np.zeros(self.walk_len, dtype=np.float32)
+        node_pos_counter[self.padding_node] = np.zeros(self.walk_len, dtype=np.float32)
+
+        # 统计节点在窗口中各位置的出现次数
+        for _, windows in self.contexts.items():
+            for walk in windows:
+                for pos_idx in range(self.walk_len):
+                    node, _ = walk[pos_idx]
+                    node_pos_counter[node][pos_idx] += 1
+        
+        for node, windows in self.contexts.items():
+            pos_batch = []            
+            for walk in windows:
+                pos_row = np.zeros((self.walk_len, self.walk_len), dtype=np.float32)
+                
+                # 填充当前游走的位置计数（归一化）
+                for pos_idx in range(self.walk_len):
+                    nd, _ = walk[pos_idx]
+                    pos_row[pos_idx] = node_pos_counter[nd] / self.walk_num
+                
+                pos_tensor = torch.tensor(pos_row, dtype=torch.float32, device=self.device)
+                pos_batch.append(pos_tensor)
+            
+            # [walk_num, walk_len, walk_len]
+            pos_batch = torch.stack(pos_batch)
+            self.pos_tensor[node, :, :, :] = pos_batch
+                
+
+    def _encode_time(self, nodes: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            nodes: [batch] 节点ID张量
+        Returns:
+            [B, WN, WL, TD] 上下文时间编码特征
+        """
+        batch_size = nodes.shape[0]
+        times_tensor = self.time_tensor[nodes]  # [B, WN, WL]
+
+        times_tensor = times_tensor.view(batch_size, self.walk_num, self.walk_len, 1)
+
+        # 双频率编码
+        freq1 = times_tensor * self.basis_freq1.view(1, 1, 1, -1)
+        freq2 = times_tensor * self.basis_freq2.view(1, 1, 1, -1)
+        map_ts = torch.cat([torch.cos(freq1 + self.phase[:self.time_dim//2]), 
+                            torch.sin(freq2 + self.phase[self.time_dim//2:])], dim=-1)
+        
+        # 门控融合
+        gate = self.time_gate(map_ts)
+        map_ts = map_ts * gate + map_ts.detach() * (1 - gate)  # 残差门控
+        
+        map_ts = F.layer_norm(map_ts, map_ts.shape[1:])  # 增加层归一化
+        map_ts = F.dropout(map_ts, p=self.dropout_p, training=self.training)
+        return map_ts
+
+    def _encode_pos(self, nodes: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            nodes: [batch] 节点ID张量
+        Returns:
+            [B, WN, WL, pos_dim] 上下文位置编码特征
+        """
+        # [B, WN, WL, WL]
+        pos_tensor_batch = self.pos_tensor[nodes]
+        
+        # 重塑维度以适配嵌入层：[B×WN×WL, WL]
+        batch_shape = pos_tensor_batch.shape  # [B, WN, WL, WL]
+        pos_reshaped = pos_tensor_batch.reshape(-1, self.walk_len)
+
+        # 过嵌入层：[B×WN×WL, pos_dim]
+        pos_encoded = self.trainable_embedding(pos_reshaped)
+        
+        # 恢复原始维度：[B, WN, WL, pos_dim]
+        pos_encoded = pos_encoded.reshape(batch_shape[0], batch_shape[1], batch_shape[2], self.pos_dim)
+
+        pos_encoded = F.layer_norm(pos_encoded, pos_encoded.shape[1:])
+        pos_encoded = F.dropout(pos_encoded, p=self.dropout_p, training=self.training)
+        return pos_encoded
+    
+    def forward(self, nodes: torch.Tensor, return_separate: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        前向传播：融合时间+位置编码
+        Args:
+            nodes: [batch] 节点ID张量
+            return_separate: 是否返回分离的时间/位置特征（默认返回拼接后的融合特征）
+        Returns:
+            如果return_separate=True: (time_feat, pos_feat)
+            否则: 拼接后的融合特征 [B, WN, WL, time_dim+pos_dim]
+        """
+        time_feat = self._encode_time(nodes)  # [B, WN, WL, time_dim]
+        pos_feat = self._encode_pos(nodes)    # [B, WN, WL, pos_dim]
+        
+        if return_separate:
+            return time_feat, pos_feat
+        else:
+            # 拼接融合时间+位置特征
+            fusion_feat = torch.cat([time_feat, pos_feat], dim=-1)
+            return fusion_feat
+    
+class ContextualFeatureAggregator(nn.Module):
+    """上下文特征编码器（支持注意力聚合）"""
+    def __init__(
+            self, 
+            input_dim: int, 
+            hidden_dim: int, 
+            version: str, 
+            n_head: int = 8, 
+            rnn_type: str = 'GRU', 
+            dropout_p: float = 0.1, 
+            device: torch.device = torch.device('cpu')
+        ):
+        super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.hidden_dim_one_direction = self.hidden_dim // 2
-        self.rnn_type = rnn_type
+        self.rnn_type = rnn_type.upper()
+        assert self.rnn_type in ['LSTM', 'GRU'], f"RNN类型仅支持LSTM/GRU, 当前为{self.rnn_type}"
         self.version = version
-        self.model_dim = self.hidden_dim_one_direction * 2  # notice that we are using bi-lstm
+        assert self.version in ['mean', 'att'], f"聚合方式仅支持mean/att, 当前为{self.version}"
+        self.device = device
+        self.rnn_input_norm = nn.LayerNorm(input_dim).to(self.device)
+        self.dropout = nn.Dropout(dropout_p).to(self.device)
+        self.device = device
 
-        assert self.rnn_type in ['LSTM', 'GRU']
+        # 构建RNN
         if self.rnn_type == 'LSTM':
-            self.rnn = torch.nn.LSTM(input_size=self.input_dim, hidden_size=self.hidden_dim_one_direction,
-                                    batch_first=True, bidirectional=True)
+            self.rnn = nn.LSTM(
+                input_size=self.input_dim,
+                hidden_size=self.hidden_dim_one_direction,
+                batch_first=True,
+                bidirectional=True,
+            ).to(self.device)
         else:
-            self.rnn = torch.nn.GRU(input_size=self.input_dim, hidden_size=self.hidden_dim_one_direction,
-                                    batch_first=True, bidirectional=True)
-        self.dropout = torch.nn.Dropout(dropout_p)
+            self.rnn = nn.GRU(
+                input_size=self.input_dim,
+                hidden_size=self.hidden_dim_one_direction,
+                batch_first=True,
+                bidirectional=True,
+            ).to(self.device)
+                
+        # Transformer注意力聚合（仅当version=att时启用）
+        self.model_dim = self.hidden_dim_one_direction * 2
+        if self.version == 'att':
+            self.n_head = n_head
+            if self.model_dim % self.n_head != 0:
+                # 自动调整model_dim为n_head的整数倍（保证注意力维度合法）
+                self.model_dim = ((self.model_dim // self.n_head) + 1) * self.n_head
+                # 投影层适配维度
+                self.dim_adapter = nn.Linear(self.hidden_dim_one_direction * 2, self.model_dim).to(self.device)
+                self.dim_adapter.apply(init_weights)
+            else:
+                self.dim_adapter = None
+            
+            # Transformer层
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=self.model_dim,
+                nhead=self.n_head,
+                dim_feedforward=4 * self.model_dim,
+                dropout=dropout_p,
+                activation='relu',
+                batch_first=True,
+                norm_first=True,
+                layer_norm_eps=1e-6
+            )
+            self.att_layers = nn.TransformerEncoder(
+                encoder_layer=encoder_layer,
+                num_layers=1,
+                norm=nn.LayerNorm(self.model_dim)
+            ).to(self.device)
+            
+            # 3. 增强注意力分数学习（多头注意力+门控机制）
+            # 替换原线性层为多头注意力分数计算
+            self.att_score_layer = nn.Sequential(
+                nn.Linear(self.model_dim, self.model_dim),
+                nn.Tanh(),  # 非线性激活增强分数区分度
+                nn.Linear(self.model_dim, 1, bias=False)
+            ).to(self.device)
+            self.att_score_layer.apply(init_weights)
+            
+            # 4. 注意力权重平滑系数（防止权重过于集中）
+            self.att_smoothing = 0.1
+            
+            # 5. 增强投影层（残差连接+更优的激活）
+            self.att_proj = nn.Sequential(
+                nn.Linear(self.model_dim, self.model_dim),
+                nn.LayerNorm(self.model_dim),
+                nn.GELU(),
+                nn.Dropout(dropout_p * 0.5),
+                nn.Linear(self.model_dim, self.model_dim)
+            ).to(self.device)
+            self.att_proj.apply(init_weights)
+            
+            # 6. 残差连接（防止梯度消失）
+            self.residual_proj = nn.Linear(self.model_dim, self.model_dim) if self.model_dim != self.hidden_dim else nn.Identity()
+        else:
+            self.att_layers = None
+            self.att_score_layer = None
+            self.att_proj = None
+            self.dim_adapter = None
+            self.residual_proj = None
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            X: [batch, walk_num, walk_len, dim] 输入特征
+        Returns:
+            [batch, model_dim] 聚合后的特征
+        """
+        batch, walk_num, walk_len, dim = X.shape
+        # 重塑维度以适配RNN
+        X_reshaped = X.reshape(batch * walk_num, walk_len, dim)
+        X_reshaped = self.rnn_input_norm(X_reshaped)  # RNN输入归一化
+        encoded_all, _ = self.rnn(X_reshaped)  # [batch×seq_num, cs_len, model_dim]
         
-        self.attAgg = torch.nn.TransformerEncoderLayer(d_model=self.model_dim, nhead=8, dim_feedforward=2 * self.model_dim, 
-                                                       dropout=dropout_p, activation='relu')
+        # 均值聚合
+        encoded_mean = encoded_all.mean(dim=1)  # [batch×seq_num, model_dim]
+        ft = encoded_mean.reshape(batch, walk_num, -1)  # [batch, walk_num, model_dim]
         
-        self.norm = torch.nn.LayerNorm(self.model_dim)
-        
-    def forward(self, X):
-        # [batch, seq_num, cs_len, pos_dim]
-        f = []
-        for i in range(X.shape[1]):
-            encoded_features = self.rnn(X[:,i,:,:])[0]
-            # encoded_features = encoded_features.select(dim=1, index=0)
-            encoded_features = encoded_features.mean(dim=1)
-            encoded_features = self.dropout(encoded_features)
-            f.append(encoded_features)
-        ft = torch.stack(f)
-        
+        # 最终聚合
         if self.version == 'mean':
-            output = torch.mean(ft, dim=0)
+            output = torch.mean(ft, dim=1)
         else:
-            # Transformer聚合
-            output = self.attAgg(ft)
-            output = torch.mean(output, dim=0)
-        return output
+            # 维度适配（如果需要）
+            if self.dim_adapter is not None:
+                ft = self.dim_adapter(ft)
+            
+            att_output = self.att_layers(ft)  # [batch, walk_num, model_dim]
+            att_scores = self.att_score_layer(att_output)  # [batch, walk_num, 1]
+            # 权重平滑：防止单一样本权重占比过高
+            att_weights = F.softmax(att_scores / self.att_smoothing, dim=1)  
+            # 权重归一化（可选，提升稳定性）
+            att_weights = att_weights / (att_weights.sum(dim=1, keepdim=True) + 1e-8)
+            
+            # 调试信息
+            # if self.training and torch.rand(1).item() < 0.05:
+            #     sample_weights = att_weights[0, :, 0].detach().cpu().numpy()
+            #     print(f"\n注意力权重（第一个样本）: {sample_weights.round(3)}")
+            #     print(f"权重最大值位置: {sample_weights.argmax()}, 最大值: {sample_weights.max():.3f}")
+            #     print(f"权重标准差: {sample_weights.std():.3f}（>0.1表示权重有区分度）")
+            
+            # 注意力聚合
+            output = (att_output * att_weights).sum(dim=1)  # [batch, model_dim]
+            
+            # 残差连接
+            residual = self.residual_proj(ft.mean(dim=1))
+            output = output + residual
+            output = self.att_proj(output)
         
-class MergeLayer(torch.nn.Module):
-    def __init__(self, dim1, dim2, dim3, dim4):
+        output = self.dropout(output)
+        return output
+
+        
+class MergeLayer(nn.Module):
+    """
+    特征融合层（链接预测场景：源/目标节点特征融合→分数输出）
+    """
+    def __init__(
+            self, 
+            src_dim: int, 
+            tgt_dim: int, 
+            hidden_dim: int, 
+            out_dim: int = 1, 
+            dropout_p: float = 0.1, 
+            activation: nn.Module = nn.ReLU(),
+            use_layer_norm: bool = True,
+            device: torch.device = torch.device("cpu")
+        ):
         super().__init__()
-        # self.layer_norm = torch.nn.LayerNorm(dim1 + dim2)
-        self.fc1 = torch.nn.Linear(dim1 + dim2, dim3)
-        self.fc2 = torch.nn.Linear(dim3, dim4)
-        self.act = torch.nn.ReLU()
+        self.use_layer_norm = use_layer_norm     
+        if self.use_layer_norm:
+            self.ln1 = nn.LayerNorm(hidden_dim).to(device)   
+        self.fc1 = nn.Linear(src_dim + tgt_dim, hidden_dim).to(device)
+        self.fc2 = nn.Linear(hidden_dim, out_dim).to(device)
+        self.act = activation.to(device)
+        self.dropout = nn.Dropout(dropout_p).to(device)
+        self.apply(init_weights)
 
-        torch.nn.init.xavier_normal_(self.fc1.weight)
-        torch.nn.init.xavier_normal_(self.fc2.weight)
+    def forward(
+            self, 
+            src_embed: torch.Tensor, 
+            tgt_embed: torch.Tensor,
+            return_hidden: bool = False  # 返回隐藏层特征（用于可视化/下游任务）
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        前向传播：融合源/目标节点特征，输出链接预测分数
+        Args:
+            src_embed: [B, src_dim] 源节点特征
+            tgt_embed: [B, tgt_dim] 目标节点特征
+            return_hidden: 是否返回隐藏层特征（默认仅返回输出）
+        Returns:
+            若return_hidden=False: [B, out_dim] 链接预测分数
+            若return_hidden=True: ([B, out_dim], [B, hidden_dim]) 分数 + 隐藏层特征
+        """
+        x = torch.cat([src_embed, tgt_embed], dim=-1) # [B, src_dim + tgt_dim]
 
-    def forward(self, x1, x2):
-        x = torch.cat([x1, x2], dim=-1)
-        # x = (x1 + x2) / 2
-        # x = self.layer_norm(x)
-        h = self.act(self.fc1(x))
-        z = self.fc2(h)
+        h = self.fc1(x)  # [B, hidden_dim]
+        if self.use_layer_norm:
+            h = self.ln1(h)
+        h = self.act(h)
+        h = self.dropout(h)
+
+        z = self.fc2(h)  # [B, out_dim]
+
+        if return_hidden:
+            return z, h
         return z
 
             
-class IPNet(torch.nn.Module):
-    def __init__(self, node_feature, node_interaction_seq, is_len, node_causality_seq, seq_num, cs_len, device, checkpoint_dir, 
-                 n_head=8, dropout_p=0.1, bias=True, rnn_type='GRU', version='mean'):
-        super(IPNet, self).__init__()
-        self.rnn_type = rnn_type
-        self.bias = bias
-        
-        self.node_feat = torch.nn.Parameter(torch.from_numpy(node_feature.astype(np.float32)))
+class IPNet(nn.Module):
+    DEFAULT_PADDING_NODE = 0
+    DEFAULT_DROPOUT = 0.3
+    DEFAULT_N_HEAD = 8
+    DEFAULT_RNN_TYPE = 'GRU'
+    DEFAULT_VERSION = 'mean'
+    DEFAULT_DEVICE = torch.device("cpu")
+    def __init__(
+            self,
+            node_feature: np.ndarray,
+            interactions: dict[int, list[tuple[int, float]]],
+            contexts: dict[int, list[list[tuple[int, float]]]],
+            ckpt_dir: str,
+            specified_seq_len: int | None = None,
+            specified_walk_len: int | None = None,
+            version: str = DEFAULT_VERSION,
+            rnn_type: str = DEFAULT_RNN_TYPE,
+            n_head: int = DEFAULT_N_HEAD,
+            dropout_p: float = DEFAULT_DROPOUT,
+            padding_node: int = DEFAULT_PADDING_NODE,
+            device: torch.device = DEFAULT_DEVICE
+        ):
+        super().__init__()
+        # 基础配置
+        self.rnn_type = rnn_type.upper()
         self.version = version
-        self.feat_dim = self.node_feat.shape[1] # 节点特征维度
-        self.time_dim = self.feat_dim // 2  # 时序特征
-        self.pos_dim = self.feat_dim // 2   # 位置编码特征
-        self.model_dim = self.time_dim + self.pos_dim
-        self.attn_dim = self.model_dim
-        self.out_dim = self.feat_dim
-        self.n_head = n_head
+        self.ckpt_dir = ckpt_dir
+        os.makedirs(ckpt_dir, exist_ok=True)
         self.dropout_p = dropout_p
+        self.padding_node = padding_node
         self.device = device
-        self.seq_num = seq_num
-        self.cs_len = cs_len
-        self.node_embed = torch.nn.Embedding.from_pretrained(self.node_feat, padding_idx=0, freeze=True)
+
+        # 节点特征初始化
+        self.node_num = node_feature.shape[0]
+        self.feat_dim = node_feature.shape[1]
+        if self.version == 'w2v':
+            node_feat_tensor = torch.from_numpy(node_feature.astype(np.float32)).to(device)
+            node_feat_tensor[self.padding_node] = 0.0
+            self.node_embed = nn.Embedding.from_pretrained(
+                embeddings=node_feat_tensor,
+                padding_idx=self.padding_node,  # 屏蔽padding节点的梯度更新
+                freeze=False
+            ).to(device)
         
-        # node interaction pattern learning
-        self.time_encoder = TimeEncode(layers=is_len, enc_dim=self.time_dim)
-        self.time_encoder.init_node_time_map(node_interaction_seq)
-        
-        self.position_encoder = PositionEncoder(layers=is_len, enc_dim=self.pos_dim)
-        self.position_encoder.init_node_pos_map(node_interaction_seq, node_feature)
-        
-        # node causality learning
-        self.causality_time_encoder = CausalityTimeEncode(seq_num=seq_num, layers=cs_len, enc_dim=self.time_dim)
-        self.causality_time_encoder.init_node_time_map(node_causality_seq)
-        
-        self.causality_position_encoder = CausalityPositionEncoder(seq_num=seq_num, layers=cs_len, enc_dim=self.pos_dim)
-        self.causality_position_encoder.init_node_pos_map(node_causality_seq, node_feature)
-        
-        # encode all types of features along each temporal walk
-        self.feature_encoder = FeatureEncoder(self.model_dim, self.model_dim, self.rnn_type)
-        self.causality_feature_encoder = CausalityFeatureEncoder(self.model_dim, self.model_dim, self.version, self.rnn_type)
-        
-        # not use
-        self.projector = torch.nn.Sequential(torch.nn.Linear(self.out_dim , self.out_dim), 
-                                             torch.nn.ReLU(), 
-                                             torch.nn.Dropout(self.dropout_p))
-        # not use
-        self.self_attention = torch.nn.TransformerEncoderLayer(d_model=self.attn_dim, nhead=self.n_head,
-                                                      dim_feedforward=2 * self.attn_dim, dropout=self.dropout_p,
-                                                      activation='relu')
-        # final projection layer
-        self.affinity_score = MergeLayer(self.out_dim * 2, self.out_dim * 2, self.feat_dim, 1)
-        
-        # set checkpoint path
-        self.get_checkpoint_path = lambda epoch: os.path.join(checkpoint_dir, 'checkpoint-epoch-{}.pth'.format(epoch))
-        
+        # 维度计算
+        assert self.feat_dim % 2 == 0, f"节点特征维度需为偶数，当前为{self.feat_dim}"
+        self.time_dim = self.feat_dim // 2
+        self.pos_dim = self.feat_dim // 2
+        self.model_dim = self.feat_dim
+        self.out_dim = self.feat_dim        
+
+        # --------------------------- 1. 交互模式学习 ---------------------------
+        self.interaction_encoder = InteractionSequenceEncoder(
+            node_num=self.node_num,
+            time_dim=self.time_dim,
+            pos_dim=self.pos_dim,
+            node_interactions=interactions,
+            specified_seq_len=specified_seq_len,
+            padding_node=self.padding_node,
+            dropout_p=dropout_p,
+            device=device
+        )
+
+        self.sequence_aggregator = SequenceFeatureAggregator(
+            input_dim=self.model_dim,
+            hidden_dim=self.model_dim,
+            rnn_type=self.rnn_type,
+            dropout_p=self.dropout_p,
+            device=device
+        )
+
+        # --------------------------- 2. 时序上下文建模 ---------------------------
+        # w2v版本不需要时序上下文建模，forward函数中直接拼接word2vec特征
+        if self.version in ['mean', 'att']:
+            self.ctx_encoder = ContextEncoder(
+                nodes_num=self.node_num,
+                time_dim=self.time_dim,
+                pos_dim=self.pos_dim,
+                contexts=contexts,
+                specified_walk_len=specified_walk_len,
+                padding_node=self.padding_node,
+                dropout_p=self.dropout_p,
+                device=device
+            )
+
+            self.ctx_aggregator = ContextualFeatureAggregator(
+                input_dim=self.model_dim,
+                hidden_dim=self.model_dim,
+                version=self.version,
+                rnn_type=self.rnn_type,
+                dropout_p=self.dropout_p,
+                n_head=n_head,
+                device=device
+            )
+
+        # --------------------------- 3. 特征融合层 ---------------------------
+        self.merge_layer = MergeLayer(
+            src_dim=self.out_dim * 2,
+            tgt_dim=self.out_dim * 2,
+            hidden_dim=self.feat_dim,
+            out_dim=1,
+            dropout_p=self.dropout_p,
+            device=device
+        )
+
+        # 模型信息打印
+        self._print_model_info()
+
+    def _print_model_info(self):
+        print(f"\n✅ IPNet模型初始化完成")
+        print(f"  - 节点数: {self.node_num}（内置虚拟节点{self.padding_node}）")
+        # 1. 交互模式编码
+        if hasattr(self, 'interaction_encoder'):
+            seq_len = self.interaction_encoder.seq_len if hasattr(self.interaction_encoder, 'seq_len') else '未知'
+            print(f"  - 交互模式编码: 序列长度={seq_len}")
+        # 2. 上下文编码
+        if hasattr(self, 'ctx_encoder'):
+            ctx_walk_num = self.ctx_encoder.walk_num if hasattr(self.ctx_encoder, 'walk_num') else '未知'
+            ctx_walk_len = self.ctx_encoder.walk_len if hasattr(self.ctx_encoder, 'walk_len') else '未知'
+            print(f"  - 上下文编码: 窗口数量={ctx_walk_num} | 窗口长度={ctx_walk_len}")
+        print(f"  - 特征维度: {self.feat_dim} | 时间编码维度: {self.time_dim} | 位置编码维度: {self.pos_dim}")
+        print(f"  - 聚合方式: {self.version} | RNN类型: {self.rnn_type}")
+        print(f"  - 设备: {self.device} | Dropout: {self.dropout_p}")
+
     
-    def forward(self, edges):
+    def forward(self, edges: torch.Tensor, return_logits: bool = False) -> torch.Tensor:
+        """
+        前向传播
+        Args:
+            edges: [batch, 2] 边张量
+            return_logits: 是否返回原始logits(计算loss), False则返回sigmoid概率
+        Returns:
+            [batch] logits或概率值
+        """
+        if isinstance(edges, np.ndarray):
+            edges = torch.from_numpy(edges).to(self.device)
+        elif not isinstance(edges, torch.Tensor):
+            raise TypeError(f"edges必须是numpy数组或torch张量, 当前类型: {type(edges)}")
+        
         src_nodes = edges[:, 0]
         tgt_nodes = edges[:, 1]
+        
         src_embed = self.forward_msg(src_nodes)
         tgt_embed = self.forward_msg(tgt_nodes)
-        score = self.affinity_score(src_embed, tgt_embed)
-        score.squeeze_(dim=-1)
-        return score.sigmoid()
 
-    def forward_msg(self, nodes):
-        batch = len(nodes)
+        score_logits = self.merge_layer(src_embed, tgt_embed).squeeze(dim=-1)
         
-        nodes_th = torch.from_numpy(nodes).to(self.device)
+        if return_logits:
+            return score_logits  # 返回logits计算loss
+        else:
+            return score_logits.sigmoid()  # 返回概率
+
+    def forward_msg(self, nodes: torch.Tensor) -> torch.Tensor:
+        """
+        节点特征编码
+        Args:
+            nodes: [batch] 节点ID张量
+        Returns:
+            [batch, out_dim*2] 编码后的节点特征
+        """
+        # --------------------------- 1. 交互模式特征 ---------------------------
+        interaction_feat = self.interaction_encoder(nodes)  # [B, L, time_dim+pos_dim]
+        interaction_feat = self.sequence_aggregator(interaction_feat)  # [B, model_dim]
+        # return interaction_feat
         
-    
-        node_time_map = self.time_encoder.node_time_map
-        time_enc = np.array([node_time_map[node] for node in nodes if node in node_time_map])
-        assert len(time_enc) == batch
-        times_tensor = torch.tensor(time_enc).to(self.device)
-        times_tensor = times_tensor.select(dim=-1, index=0).unsqueeze(dim=-1) - times_tensor
-        time_features = self.time_encoder(times_tensor)     # 节点交互的时序特征
-        
-        node_pos_enc = self.position_encoder.node_pos_enc   
-        pos_enc = np.array([node_pos_enc[node] for node in nodes if node in node_pos_enc])
-        assert len(pos_enc) == batch
-        pos_tensor = torch.tensor(pos_enc).to(self.device)       
-        pos_features = self.position_encoder(pos_tensor)    # 节点交互的位置编码特征
-    
-        combined_features = torch.cat([time_features, pos_features], dim=-1)
-        combined_features = self.feature_encoder(combined_features)
-        
+        # # --------------------------- 2. 上下文高阶特征 ---------------------------
         if self.version == 'w2v':
-            causality_features = self.node_embed(nodes_th)
-            return torch.cat([combined_features, causality_features], dim=-1)
+            ctx_feat = self.node_embed(nodes)
+        else:
+            ctx_feat = self.ctx_encoder(nodes)  # [B, WN, WL, time_dim+pos_dim]
+            ctx_feat = self.ctx_aggregator(ctx_feat)  # [B, model_dim]
 
-        # 节点的路径 or 因果关联信息，捕获高阶信息
-        node_causality_time_map = self.causality_time_encoder.node_time_map
-        causality_time_enc = np.array([node_causality_time_map[node] for node in nodes if node in node_causality_time_map])
-        assert len(causality_time_enc) == batch
-        causality_times_tensor = torch.tensor(causality_time_enc).to(self.device)
-        causality_time_features = self.causality_time_encoder(causality_times_tensor)     # [batch, is_len, cs_len, time_dim]
+        # Final Embeds
+        return torch.cat([interaction_feat, ctx_feat], dim=-1)
+    
+    def get_checkpoint_path(self, epoch: int) -> str:
+        """获取检查点路径"""
+        return os.path.join(self.ckpt_dir, f'checkpoint-epoch-{epoch}.pth')
+
+    def save_checkpoint(self, epoch: int, optimizer: torch.optim.Optimizer = None, loss: float = 0.0, path: str = None):
+        """
+        保存检查点
+        Args:
+            epoch: 训练轮数
+            optimizer: 优化器实例
+            loss: 当前轮次的loss值
+            path: 检查点保存路径(可选), 不指定则使用self.get_checkpoint_path(epoch)生成路径
+        """
+        ckpt_path = path if path is not None else self.get_checkpoint_path(epoch)
         
-        node_causality_pos_enc = self.causality_position_encoder.node_pos_enc
-        causality_pos_enc = np.array([node_causality_pos_enc[node] for node in nodes if node in node_causality_pos_enc])
-        assert len(causality_pos_enc) == batch
-        causality_pos_tensor = torch.tensor(causality_pos_enc).to(self.device)
-        causality_pos_features = self.causality_position_encoder(causality_pos_tensor)  # [batch, is_len, cs_len, pos_dim]
+        # 确保保存目录存在
+        ckpt_dir = os.path.dirname(ckpt_path)
+        if not os.path.exists(ckpt_dir):
+            os.makedirs(ckpt_dir, exist_ok=True)
+
+        checkpoint_dict = {
+            'epoch': epoch,
+            'model_state_dict': self.state_dict(),
+            'loss': loss,
+        }
+        if optimizer is not None:
+            checkpoint_dict['optimizer_state_dict'] = optimizer.state_dict()
         
-        # concat
-        causality_combined_features = torch.cat([causality_time_features, causality_pos_features], dim=-1)
-        causality_combined_features = self.causality_feature_encoder(causality_combined_features)
-        X = torch.cat([combined_features, causality_combined_features], dim=-1)
-        return X
+        torch.save(checkpoint_dict, ckpt_path)
+        # print(f"📌 检查点已保存至: {ckpt_path}")
+
+    def load_checkpoint(self, epoch: int = -1, optimizer: Optional[torch.optim.Optimizer] = None, path: str = None) -> dict:
+        """
+        加载检查点
+        Args:
+            epoch: 要加载的训练轮数(仅在path=None时生效), 默认-1
+            optimizer: 优化器实例(可选)，传入则恢复优化器状态
+            path: 检查点文件路径(可选), 指定则优先加载该路径, 忽略epoch参数
+        Returns:
+            加载的检查点字典(包含epoch、model_state_dict、optimizer_state_dict、loss等)
+        Raises:
+            FileNotFoundError: 检查点文件不存在时抛出
+        """
+        if path is not None:
+            ckpt_path = path
+        else:
+            if epoch < 0:
+                raise ValueError("当path=None时, 必须指定有效的epoch(≥0)")
+            ckpt_path = self.get_checkpoint_path(epoch)
+    
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"检查点文件不存在: {ckpt_path}")
+                
+        checkpoint = torch.load(ckpt_path, map_location=self.device, weights_only=False)
+        self.load_state_dict(checkpoint['model_state_dict'])
+
+        if optimizer is not None:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # load_epoch = checkpoint.get('epoch', '未知')
+        # load_loss = checkpoint.get('loss', '未知')
+        # print(f"📌 已加载检查点: {ckpt_path} (epoch: {load_epoch}, loss: {load_loss:.4f})")
+        return checkpoint
