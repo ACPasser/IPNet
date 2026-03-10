@@ -360,7 +360,8 @@ def main(args: argparse.Namespace) -> None:
             final_walk_num = recommend_walk_num
             param_updates.append(f"游走次数: {final_walk_num}")
         if args.WALK_LEN == -1:
-            final_walk_len = recommend_walk_len
+            # w2v版本的walk_len一般需要更长的游走
+            final_walk_len = recommend_walk_len * 2 if args.VERSION == "w2v" else recommend_walk_len
             param_updates.append(f"游走长度: {final_walk_len}")
         if param_updates:
             print(f"📏 模型采纳推荐的游走参数：{', '.join(param_updates)}")
@@ -496,14 +497,13 @@ if __name__ == "__main__":
     parser.add_argument("--ty", dest="TASK_TYPE", default="T", help="Task type: T (Transductive)/I (Inductive)")
     parser.add_argument("--mask", dest="MASK_RATIO", type=float, default=0.1, help="Mask ratio for inductive task (0<mask<1, default: 0.1)")
     
-    # 模型超参数
+    # 模型参数
     parser.add_argument("--v", dest="VERSION", default="mean", help="IPNet version: mean/att/w2v (default: w2v)")
     parser.add_argument("--fd", dest="FEAT_DIM", type=int, default=128, help="Feature dimension (default: 128)")
     parser.add_argument("--rnn", dest="RNN_TYPE", default="GRU", help="RNN type: LSTM/GRU (default: GRU)")
-    parser.add_argument("--lr", dest="LR", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
     parser.add_argument("--pd", dest="PADDING_NODE", type=int, default=0, help="Padding node ID (default: 0, must be non-negative and not recommended to modify)")
     
-    # 交互序列/上下文窗口配置
+    # 核心超参
     parser.add_argument("--il", dest="IS_LEN", type=int, default=-1, help="Interaction sequence length (default: -1, use average sequence length automatically)")
     parser.add_argument("--wn", dest="WALK_NUM", type=int, default=-1, help="Random walks per node (default: -1=auto-estimate; ≥1 for manual setting)")
     parser.add_argument("--wl", dest="WALK_LEN", type=int, default=-1, help="Single walk length (default: -1=auto-estimate; ≥5 for manual setting)")
@@ -511,9 +511,10 @@ if __name__ == "__main__":
     # 训练配置
     parser.add_argument("--epoch", dest="EPOCH", type=int, default=50, help="Number of training epochs (default: 50)")
     parser.add_argument("--bs", dest="BATCH_SIZE", type=int, default=64, help="Batch size (default: 64)")
+    parser.add_argument("--lr", dest="LR", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
     parser.add_argument("--thread", dest="THREAD_NUM", type=int, default=5, help="Number of workers (default: 5)")
     parser.add_argument("--device", dest="device", type=int, default=-2, help="Device: -2=CPU, -1=MPS (default: -1)")
-    
+
     args = parser.parse_args()
 
     if args.PADDING_NODE < 0:
