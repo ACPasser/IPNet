@@ -923,9 +923,8 @@ class DataLoader:
             base_walk_num = 20 if num_nodes < 1000 else 10 if num_nodes < 10000 else 5
 
         # 交互频率修正：频率越高，游走次数可越少（最多减少50%）
-        freq_correction = min(avg_interact_freq / 5, 2)  # 修正系数上限2（减少50%）
-        walk_num = int(base_walk_num / freq_correction)
-        walk_num = max(walk_num, 5)  # 兜底：至少5次
+        freq_correction = min(max(avg_interact_freq / 2, 0.5), 2)  # 修正系数（最多减少一半或者翻一倍）
+        walk_num = max(round(base_walk_num / freq_correction), 5)  # 兜底：至少5次
 
         # ========== 游走长度估算 ==========
         min_walk_len = 11   # 最小11步（太短学不到拓扑）
