@@ -20,6 +20,7 @@ if __name__ == '__main__':
         "date_format": "%Y-%m",   # 日期格式化
         "skip_rows": 1,           # 跳过行数
         "col_names": ['from_id', 'to_id', 'time'],  # 列名映射
+        "need_cut_snap": False,
         "train_ratio": 0.5,       # 训练集比例
         "snapshots_num": 5        # 训练集快照数量
     }
@@ -47,28 +48,29 @@ if __name__ == '__main__':
     except Exception as e:
         raise RuntimeError(f"处理原始数据失败：{str(e)}") from e
 
-    # 2. 按月切分快照（用于baseline）
-    try:
-        # 按月切割快照（全量数据）
-        cut_snapshots_by_month(
-            df=df,
-            output_snap_dir=CONFIG["output_snap_dir"],
-            time_col=CONFIG["time_col"],
-            date_format=CONFIG["date_format"],
-            sep=CONFIG["csv_sep"]
-        )
-        
-        # 均匀切割快照（训练集）
-        # gen_uniform_snapshots(
-        #     df=df,
-        #     output_snap_dir=os.path.join(CONFIG["output_snap_dir"], "train_uniform"),
-        #     train_ratio=CONFIG["train_ratio"],
-        #     snapshots_num=CONFIG["snapshots_num"],
-        #     sep=CONFIG["csv_sep"]
-        # )
-        
-    except Exception as e:
-        raise RuntimeError(f"生成快照文件失败：{str(e)}") from e
+    # 2. cut snapshots（for baseline）
+    if CONFIG["need_cut_snap"]:
+        try:
+            # 按月切割快照（全量数据）
+            cut_snapshots_by_month(
+                df=df,
+                output_snap_dir=CONFIG["output_snap_dir"],
+                time_col=CONFIG["time_col"],
+                date_format=CONFIG["date_format"],
+                sep=CONFIG["csv_sep"]
+            )
+            
+            # 均匀切割快照（训练集）
+            # gen_uniform_snapshots(
+            #     df=df,
+            #     output_snap_dir=os.path.join(CONFIG["output_snap_dir"], "train_uniform"),
+            #     train_ratio=CONFIG["train_ratio"],
+            #     snapshots_num=CONFIG["snapshots_num"],
+            #     sep=CONFIG["csv_sep"]
+            # )
+            
+        except Exception as e:
+            raise RuntimeError(f"生成快照文件失败：{str(e)}") from e
 
     # 3. save node set
     try:
