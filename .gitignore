@@ -1,0 +1,70 @@
+# ===================== 虚拟环境（避免误删/追踪） =====================
+# 虚拟环境目录
+zhihunet-env/
+# 通用虚拟环境命名
+venv/
+env/
+.env
+*.env
+ENV/
+
+# ===================== Python 编译/缓存文件 =====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===================== 项目生成文件 =====================
+data/*/0.origin/
+data/*/1.nodes_set/
+data/*/1.snapshots/
+models/*
+results/*
+*.pth
+*.pt
+*.ckpt
+*.bin
+logs/
+*.log
+training_logs/
+*.tmp
+*.temp
+
+# ===================== 系统/编辑器文件 =====================
+# Mac 系统
+.DS_Store
+.AppleDouble
+.LSOverride
+# Windows 系统
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+.idea_modules/
+# Git 无关文件
+.gitattributes
+.gitignore.local
