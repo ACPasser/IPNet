@@ -9,14 +9,13 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import average_precision_score, f1_score, roc_auc_score
 from tqdm import tqdm
-from utils import EarlyStopMonitor
 from model.IPNet import IPNet
 from datetime import datetime
 from gensim.models import Word2Vec
 from data.data_utils import build_nx_graph_from_config, negative_sampling
 from data.data_loader import DataLoader
-from utils import set_random_seeds, get_device
 from data.config import MODEL_DEFAULT_CONFIG
+from model.utils import set_random_seeds, get_device, EarlyStopMonitor
 
 logger = logging.getLogger(__name__)
 
