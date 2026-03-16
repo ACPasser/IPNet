@@ -9,7 +9,8 @@ DATA_CONFIGS = {
         "csv_sep": "\t",  # 文件分隔符
         "output_graph_path": "data/UCI/0.origin/graph.csv",  # csv格式图数据保存地址
         "output_node_path": "data/UCI/1.nodes_set/nodes.csv",  # csv格式节点集保存地址
-        "need_cut_snap": False,  # 是否划分快照
+        # 快照相关
+        "need_cut_snap": False,  # 是否划分
         "output_snap_dir": "data/UCI/1.snapshots",  # 快照保存目录
         "date_format": "%Y-%m",  # 日期格式化
         "train_ratio": 0.5,  # 训练集比例
@@ -24,7 +25,8 @@ DATA_CONFIGS = {
         "csv_sep": "\t",  # 文件分隔符
         "output_graph_path": "data/IA/0.origin/graph.csv",  # csv格式图数据保存地址
         "output_node_path": "data/IA/1.nodes_set/nodes.csv",  # csv格式节点集保存地址
-        "need_cut_snap": False,  # 是否划分快照
+        # 快照相关
+        "need_cut_snap": False,  # 是否划分
         "output_snap_dir": "data/IA/1.snapshots",  # 快照保存目录
         "date_format": "%Y-%m",  # 日期格式化
         "train_ratio": 0.5,  # 训练集比例
@@ -39,12 +41,38 @@ DATA_CONFIGS = {
         "csv_sep": "\t",  # 文件分隔符
         "output_graph_path": "data/ZhiHu/0.origin/graph.csv",  # csv格式图数据保存地址
         "output_node_path": "data/ZhiHu/1.nodes_set/nodes.csv",  # csv格式节点集保存地址
-        "need_cut_snap": False,  # 是否划分快照
+        # 快照相关
+        "need_cut_snap": False,  # 是否划分
         "output_snap_dir": "data/ZhiHu/1.snapshots",  # 快照保存目录
         "date_format": "%Y-%m",  # 日期格式化
         "train_ratio": 0.5,  # 训练集比例
         "snapshots_num": 5,  # 训练集快照数量
     },
+}
+
+# 模型的默认配置
+MODEL_DEFAULT_CONFIG = {
+    # 基础配置
+    "SEED": 19,
+    # 数据集与任务配置
+    "DATASET": "UCI",
+    "TASK_TYPE": "T",  # T: Transductive, I: Inductive
+    "MASK_RATIO": 0.1,
+    # 普通参数
+    "VERSION": "mean",  # mean/att/w2v
+    "FEAT_DIM": 128,
+    "RNN_TYPE": "GRU",  # LSTM/GRU
+    "PADDING_NODE": 0,
+    # 核心超参
+    "IS_LEN": -1,  # -1: auto
+    "WALK_NUM": -1,  # -1: auto
+    "WALK_LEN": -1,  # -1: auto
+    # 训练配置
+    "EPOCH": 50,
+    "BATCH_SIZE": 64,
+    "LR": 1e-4,
+    "THREAD_NUM": 5,
+    "DEVICE": -1,  # -2:CPU, -1:MPS, ≥0:GPU
 }
 
 

@@ -33,12 +33,19 @@ wheels/
 .coverage
 htmlcov/
 
-# ===================== 项目生成文件 =====================
-data/*/0.origin/
-data/*/1.nodes_set/
-data/*/1.snapshots/
-models/*
-results/*
+# ===================== 全局忽略规则 =====================
+data/**/*.txt
+data/**/*.csv
+# ===================== 例外放行规则 =====================
+# UCI/IA 仅保留 graph.txt
+!data/uci/**/graph.txt
+!data/ia/**/graph.txt
+# ZHIHU 仅保留 graph.csv
+!data/zhihu/**/graph.csv
+
+# ===================== 通用忽略 =====================
+# 忽略训练输出目录（检查点/最佳模型/结果）
+model/training_output/
 *.pth
 *.pt
 *.ckpt

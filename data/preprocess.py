@@ -108,4 +108,4 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    preprocess(dataset_name="zhihu")
+    preprocess(dataset_name="ia")
