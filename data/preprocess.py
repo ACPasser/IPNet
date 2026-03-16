@@ -1,10 +1,9 @@
 import logging
 import os
-
 import pandas as pd
-from config import get_config
 
-from utils import read_file_norm_ws, trans_id
+from config import get_config
+from data_utils import read_file_norm_ws, trans_id
 
 logger = logging.getLogger(__name__)
 
