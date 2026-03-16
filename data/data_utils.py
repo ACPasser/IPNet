@@ -280,7 +280,7 @@ def build_nx_graph_from_config(config: dict):
 
     # 节点ID映射（从1开始编号，0保留给padding）
     node2id = {node: i + 1 for i, node in enumerate(nodes_set["node"])}
-    logger.info(f"✅ 成功加载节点集: {node_path}，节点数量: {len(node2id)}")
+    logger.info(f"✅ 节点集加载成功: {node_path}(节点数: {len(node2id)})")
 
     # ===================== 2. 读取图数据并校验 =====================
     try:
@@ -351,9 +351,11 @@ def build_nx_graph_from_config(config: dict):
         graph.remove_edges_from(self_loop_edges)
 
     # 日志输出最终结果
-    logger.info(f"✅ 成功构建NX图: {graph_path}")
-    logger.info(f"   ├─ 节点数量: {graph.number_of_nodes()} | 边数量: {graph.number_of_edges()}")
-    logger.info(f"   └─ 时间属性: {'已包含' if edge_attr else '未包含'}")
+    logger.info(f"✅ NX图构建成功: {graph_path}")
+    logger.info(
+        f"   ├─ 节点数量: {graph.number_of_nodes()} | 边数量: {graph.number_of_edges()}"
+    )
+    logger.info(f"   └─ 时间属性: {'包含' if edge_attr else '未包含'}")
     return graph
 
 

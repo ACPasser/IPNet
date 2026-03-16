@@ -167,13 +167,13 @@ class DataLoader:
         # 格式化输出
         logger.info("📊 数据集划分完成")
         logger.info(
-            f"   ├─ 原始 | 总边数: {total_edges:>6} | 训练集: {train_raw:>6} ({train_ratio_raw:.2%}) | 验证集: {val_raw:>6} ({val_ratio_raw:.2%}) | 测试集: {test_raw:>6} ({test_ratio_raw:.2%})"
+            f"   ├─ 原始 | 总边数: {total_edges} | 训练集: {train_raw} ({train_ratio_raw:.2%}) | 验证集: {val_raw} ({val_ratio_raw:.2%}) | 测试集: {test_raw} ({test_ratio_raw:.2%})"
         )
         logger.info(
-            f"   ├─ 过滤后   | 总边数: {total_filtered:>6} | 训练集: {train_filtered:>6} ({train_ratio_filtered:.2%}) | 验证集: {val_filtered:>6} ({val_ratio_filtered:.2%}) | 测试集: {test_filtered:>6} ({test_ratio_filtered:.2%})"
+            f"   ├─ 过滤后 | 总边数: {total_filtered} | 训练集: {train_filtered} ({train_ratio_filtered:.2%}) | 验证集: {val_filtered} ({val_ratio_filtered:.2%}) | 测试集: {test_filtered} ({test_ratio_filtered:.2%})"
         )
         logger.info(
-            f"   └─ 过滤信息 | 共过滤掉 {filtered_out} 条边（验证/测试集含训练集外节点）"
+            f"   └─ 过滤信息 | 共过滤掉 {filtered_out} 条边(验证/测试集含训练集外节点)"
         )
 
     def preprocess(
@@ -248,11 +248,11 @@ class DataLoader:
 
         logger.info(f"📊 {name}集样本统计（边去重后）:")
         logger.info(
-            f"   - 正样本数: {pos_num} (去重前: {raw_pos_num}, 重复率: {dup_rate:.2%})"
+            f"   ├─ 正样本数: {pos_num} (去重前: {raw_pos_num}, 重复率: {dup_rate:.2%})"
         )
-        logger.info(f"   - 负样本数: {neg_num} (平衡采样)")
-        logger.info(f"   - 总样本数: {total_num} (正负样本比: 1:1)")
-        logger.info(f"   - 节点数: {len(nodes)} | 邻接表大小: {len(adj)}")
+        logger.info(f"   ├─ 负样本数: {neg_num} (平衡采样)")
+        logger.info(f"   ├─ 总样本数: {total_num} (正负样本比: 1:1)")
+        logger.info(f"   └─ 节点数: {len(nodes)} | 邻接表大小: {len(adj)}")
 
         return {
             "edges": edges,  # 去重+打乱后的正样本边
@@ -566,16 +566,16 @@ class DataLoader:
 
         logger.info("✅ 上下文窗口提取完成")
         logger.info(
-            f"   ├─ 游走配置: 次数={walk_num} | 长度={walk_len} | CPU进程数={workers}"
+            f"   ├─ 游走配置: 次数: {walk_num} | 长度: {walk_len} | CPU进程数: {workers}"
         )
         total_contexts = sum(len(v) for v in context_dict.values())
         avg_seq_per_node = (
             total_contexts / len(context_dict) if len(context_dict) > 0 else 0
         )
         logger.info(
-            f"   ├─ 提取结果: 覆盖节点数={len(context_dict)} | 总序列数={total_contexts}"
+            f"   ├─ 提取结果: 覆盖节点数: {len(context_dict)} | 总序列数: {total_contexts}"
         )
-        logger.info(f"   └─ 统计信息: 单节点平均序列数={avg_seq_per_node:.2f}")
+        logger.info(f"   └─ 统计信息: 单节点平均序列数: {avg_seq_per_node:.2f}")
         return context_dict
 
     def _precompute_transition_probs(

@@ -40,7 +40,7 @@ def preprocess(config=None, dataset_name=None):
         if output_graph_dir:
             os.makedirs(output_graph_dir, exist_ok=True)
         df.to_csv(config["output_graph_path"], sep=config["csv_sep"], index=False)
-        logger.info(f"✅ 预处理后的数据集文件保存至: {config['output_graph_path']}")
+        logger.info(f"✅ 预处理完成, 数据集文件保存至: {config['output_graph_path']}")
     except FileNotFoundError as e:
         raise FileNotFoundError(f"读取原始数据失败：文件不存在 - {str(e)}") from e
     except Exception as e:

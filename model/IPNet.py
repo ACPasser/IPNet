@@ -895,8 +895,8 @@ class IPNet(nn.Module):
         self._print_model_info()
 
     def _print_model_info(self):
-        logger.info(f"✅ IPNet模型初始化完成")
-        logger.info(f"  - 节点数: {self.node_num}（内置虚拟节点{self.padding_node}）")
+        logger.info("✅ IPNet模型初始化完成")
+        logger.info(f"   ├─ 节点数: {self.node_num}（内置虚拟节点{self.padding_node}）")
         # 1. 交互模式编码
         if hasattr(self, "interaction_encoder"):
             seq_len = (
@@ -904,7 +904,7 @@ class IPNet(nn.Module):
                 if hasattr(self.interaction_encoder, "seq_len")
                 else "未知"
             )
-            logger.info(f"  - 交互模式编码: 序列长度={seq_len}")
+            logger.info(f"   ├─ 交互序列长度: {seq_len}")
         # 2. 上下文编码
         if hasattr(self, "ctx_encoder"):
             ctx_walk_num = (
@@ -918,13 +918,13 @@ class IPNet(nn.Module):
                 else "未知"
             )
             logger.info(
-                f"  - 上下文编码: 窗口数量={ctx_walk_num} | 窗口长度={ctx_walk_len}"
+                f"   ├─ 上下文编码: 窗口数量: {ctx_walk_num} | 窗口长度: {ctx_walk_len} | 聚合方式: {self.version}"
             )
         logger.info(
-            f"  - 特征维度: {self.feat_dim} | 时间编码维度: {self.time_dim} | 位置编码维度: {self.pos_dim}"
+            f"   ├─ 节点特征维度: {self.feat_dim} | 时间编码维度: {self.time_dim} | 位置编码维度: {self.pos_dim}"
         )
-        logger.info(f"  - 聚合方式: {self.version} | RNN类型: {self.rnn_type}")
-        logger.info(f"  - 设备: {self.device} | Dropout: {self.dropout_p}")
+        logger.info(f"   ├─ RNN类型: {self.rnn_type}")
+        logger.info(f"   └─ 设备: {self.device} | Dropout: {self.dropout_p}")
 
     def forward(self, edges: torch.Tensor, return_logits: bool = False) -> torch.Tensor:
         """

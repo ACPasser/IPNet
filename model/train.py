@@ -57,10 +57,6 @@ def run_training(model_config: dict, data_config: dict) -> dict:
             logger.error(f"❌ 预处理数据集失败: {str(e)}", exc_info=True)
             raise  # 预处理失败则终止训练
 
-    logger.info(
-        f"📌 数据集: {cfg['DATASET']} | 任务类型: {'Transductive (直推式)' if cfg['TASK_TYPE'] == 'T' else 'Inductive (归纳式)'} | 模型版本: {cfg['VERSION']} | 种子: {cfg['SEED']}"
-    )
-
     # 设置随机种子
     set_random_seeds(cfg["SEED"])
     # Device
@@ -180,7 +176,6 @@ def run_training(model_config: dict, data_config: dict) -> dict:
     )
 
     # 7. 测试
-    logger.info("📝 Final testing...")
     test_neg = np.array(
         negative_sampling(
             test_data["nodes"],
@@ -195,18 +190,29 @@ def run_training(model_config: dict, data_config: dict) -> dict:
         model, test_data["edges"], test_neg, cfg["BATCH_SIZE"]
     )
 
-    logger.info("=== Test Results ===")
-    logger.info(f"Test Acc: {test_acc:.4f}")
-    logger.info(f"Test AUC: {test_auc:.4f}")
-    logger.info(f"Test AP: {test_ap:.4f}")
-    logger.info(f"Test F1: {test_f1:.4f}")
+    # 测试结果打印优化版
+    logger.info("=" * 60)  # 醒目分隔线，突出测试结果环节
+    logger.info("📊 Final Test Results (最终测试指标)")
+    logger.info("┌─────────────┬──────────┬───────────┐")
+    logger.info("│   Metric    │  Value   │  Percent  │")
+    logger.info("├─────────────┼──────────┼───────────┤")
+    # 格式化输出每个指标，左对齐名称，右对齐数值，补充百分比（分类任务更直观）
+    logger.info(f"│  Test Acc   │ {test_acc:>8.4f} │ {test_acc * 100:>8.2f}% │")
+    logger.info(f"│  Test AUC   │ {test_auc:>8.4f} │ {test_auc * 100:>8.2f}% │")
+    logger.info(f"│  Test AP    │ {test_ap:>8.4f} │ {test_ap * 100:>8.2f}% │")
+    logger.info(f"│  Test F1    │ {test_f1:>8.4f} │ {test_f1 * 100:>8.2f}% │")
+    logger.info("└─────────────┴──────────┴───────────┘")
 
     # 8. 结果保存
     execution_time = time.time() - start_time
-    task_desc = "Transductive" if cfg["TASK_TYPE"] == "T" else "Inductive"
+    task_type = cfg["TASK_TYPE"]
+    task_desc = "Transductive (直推式)" if task_type == "T" else "Inductive (归纳式)"
+
+    # 核心完成提示
     logger.info(
-        f"✅ Finish {task_desc} LP Task on {cfg['DATASET']}! Cost time: {execution_time:.2f}s"
+        f"✅ 训练完成! | {task_desc} | 数据集: {cfg['DATASET']} | 模型版本: {cfg['VERSION']} | 耗时: {execution_time:.2f}s ({execution_time / 60:.2f}min)"
     )
+    logger.info("=" * 60)
 
     core_param_desc_list = [
         f"SEED-{cfg['SEED']}",
@@ -235,7 +241,7 @@ def run_training(model_config: dict, data_config: dict) -> dict:
     )
     os.makedirs(result_dir, exist_ok=True)
     result_path = os.path.join(result_dir, f"IPNet-{cfg['VERSION']}.csv")
-    logger.info(f"📁 结果文件将保存至：{result_path}")
+    logger.info(f"📁 结果文件保存至：{result_path}")
 
     need_header = not os.path.exists(result_path)
     with open(result_path, "a+", newline="") as f:
@@ -306,7 +312,7 @@ def train(
         optimizer, mode="max", factor=0.8, patience=1
     )
 
-    early_stopper = EarlyStopMonitor(max_round=3)
+    early_stopper = EarlyStopMonitor(max_round=1)
 
     train_edges = train_data["edges"]
     train_nodes = train_data["nodes"]

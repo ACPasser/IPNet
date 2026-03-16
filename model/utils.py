@@ -53,12 +53,12 @@ def get_device(gpu_flag: int) -> torch.device:
     """
     if gpu_flag == -2:
         device = torch.device("cpu")
-        logger.info("✅ Forced to use device: CPU")
+        logger.info("✅ 训练设备选用: CPU")
 
     elif gpu_flag == -1:
         if torch.backends.mps.is_available() and torch.backends.mps.is_built():
             device = torch.device("mps")
-            logger.info("📌 Using device: Apple MPS (Apple Silicon acceleration)")
+            logger.info("📌 训练设备选用: Apple MPS (Apple Silicon acceleration)")
         else:
             device = torch.device("cpu")
             logger.info(
@@ -69,7 +69,7 @@ def get_device(gpu_flag: int) -> torch.device:
         if torch.cuda.is_available():
             # 如果传入具体卡号（如0/1），则使用对应GPU；否则默认用第0卡
             device = torch.device(f"cuda:{gpu_flag}" if gpu_flag >= 0 else "cuda:0")
-            logger.info(f"📌 Using device: NVIDIA GPU (cuda:{gpu_flag})")
+            logger.info(f"📌 训练设备选用: NVIDIA GPU (cuda:{gpu_flag})")
         else:
             device = torch.device("cpu")
             logger.info("⚠️ NVIDIA GPU not available, fallback to CPU")
