@@ -98,4 +98,4 @@ def preprocess(config=None, dataset_name=None):
     except Exception as e:
         raise RuntimeError(f"节点集保存失败：{str(e)}") from e
 
-    logger.info(f"🎉 数据集 {dataset_name or '自定义'} 预处理完成！")
+    logger.info(f"🎉 数据集 {config['DATASET']} 预处理完成！")
