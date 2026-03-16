@@ -2,8 +2,8 @@ import logging
 import os
 import pandas as pd
 
-from config import get_config
-from data_utils import read_file_norm_ws, trans_id
+from data.config import get_config
+from data.data_utils import read_file_norm_ws, trans_id
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +99,3 @@ def preprocess(config=None, dataset_name=None):
         raise RuntimeError(f"节点集保存失败：{str(e)}") from e
 
     logger.info(f"🎉 数据集 {dataset_name or '自定义'} 预处理完成！")
-
-
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
-    preprocess(dataset_name="ia")

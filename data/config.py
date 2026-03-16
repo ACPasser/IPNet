@@ -54,6 +54,8 @@ DATA_CONFIGS = {
 MODEL_DEFAULT_CONFIG = {
     # 基础配置
     "SEED": 19,
+    # 是否预处理
+    "PRE_PROCESS": False,
     # 数据集与任务配置
     "DATASET": "UCI",
     "TASK_TYPE": "T",  # T: Transductive, I: Inductive

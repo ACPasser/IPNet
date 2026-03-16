@@ -12,9 +12,10 @@ from tqdm import tqdm
 from model.IPNet import IPNet
 from datetime import datetime
 from gensim.models import Word2Vec
+from data.config import MODEL_DEFAULT_CONFIG
 from data.data_utils import build_nx_graph_from_config, negative_sampling
 from data.data_loader import DataLoader
-from data.config import MODEL_DEFAULT_CONFIG
+from data.preprocess import preprocess
 from model.utils import set_random_seeds, get_device, EarlyStopMonitor
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,13 @@ def run_training(model_config: dict, data_config: dict) -> dict:
             raise ValueError(
                 f"mask_ratio must have at most 2 decimal places! Current: {cfg['MASK_RATIO']}"
             )
+
+    if cfg["PRE_PROCESS"]:
+        try:
+            preprocess(dataset_name=cfg["DATASET"])
+        except Exception as e:
+            logger.error(f"❌ 预处理数据集失败: {str(e)}", exc_info=True)
+            raise  # 预处理失败则终止训练
 
     logger.info(
         f"📌 数据集: {cfg['DATASET']} | 任务类型: {'Transductive (直推式)' if cfg['TASK_TYPE'] == 'T' else 'Inductive (归纳式)'} | 模型版本: {cfg['VERSION']} | 种子: {cfg['SEED']}"

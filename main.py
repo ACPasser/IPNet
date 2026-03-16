@@ -4,10 +4,6 @@ from data.config import MODEL_DEFAULT_CONFIG, get_config
 from model.train import run_training
 
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-
 def main(args: argparse.Namespace) -> dict:
     """
     命令行入口函数: 将命令行参数转换为配置字典, 调用run_training
@@ -24,11 +20,16 @@ def main(args: argparse.Namespace) -> dict:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="IPNet for Dynamic Network Link Prediction (Apple Silicon Adapted)"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+
+    parser = argparse.ArgumentParser(description="IPNet for Dynamic Network Link Prediction (Apple Silicon Adapted)")
     # 基础配置
     parser.add_argument("--seed", dest="SEED", type=int, help=f"Random seed (default: {MODEL_DEFAULT_CONFIG['SEED']})")
+    # 预处理
+    parser.add_argument("--pp", dest="PRE_PROCESS", type=bool, default=True, help="Whether to run dataset preprocessing before training (default: True)")
     # 数据集与任务配置
     parser.add_argument("--dataset", dest="DATASET", default="UCI", help=f"Dataset name (default: {MODEL_DEFAULT_CONFIG['DATASET']})")
     parser.add_argument("--ty", dest="TASK_TYPE", help=f"Task type: T/I (default: {MODEL_DEFAULT_CONFIG['TASK_TYPE']})")
