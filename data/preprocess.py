@@ -49,7 +49,7 @@ def preprocess(config=None, dataset_name=None):
     # 2. 切割快照（可选）
     if config["need_cut_snap"]:
         try:
-            from model.utils import split_snap_by_month, split_snap_by_uniform
+            from model.model_utils import split_snap_by_month, split_snap_by_uniform
 
             # 方式一：按月切割快照（全量数据）
             split_snap_by_month(

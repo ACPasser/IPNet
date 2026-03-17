@@ -77,6 +77,41 @@ def get_device(gpu_flag: int) -> torch.device:
     return device
 
 
+def get_result_path(cfg, final_seq_len, final_walk_num, final_walk_len):
+    # 取核心参数
+    core_param_desc_list = [
+        f"SEED-{cfg['SEED']}",
+        f"TASK-{cfg['TASK_TYPE']}",
+        f"IL-{final_seq_len}",
+        f"WN-{final_walk_num}",
+        f"WL-{final_walk_len}",
+    ]
+
+    if cfg["TASK_TYPE"] == "I":
+        mask_percent = cfg["MASK_RATIO"] * 100
+        if mask_percent.is_integer():
+            mask_ratio_str = f"{int(mask_percent)}%"
+        else:
+            mask_ratio_str = f"{mask_percent:.1f}%"
+        core_param_desc_list.append(f"MR-{mask_ratio_str}")
+
+    core_params_str = "_".join(core_param_desc_list)
+
+    # 测试结果路径
+    result_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        cfg["RESULT_PATH"].format(
+            dataset=cfg["DATASET"], core_params=core_params_str, version=cfg["VERSION"]
+        ),
+    )
+
+    result_dir = os.path.dirname(result_path)
+    if result_dir:
+        os.makedirs(result_dir, exist_ok=True)
+
+    return result_path
+
+
 class EarlyStopMonitor(object):
     def __init__(self, max_round=3, higher_better=True, tolerance=1e-3):
         self.max_round = max_round

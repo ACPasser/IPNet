@@ -16,7 +16,12 @@ from data.config import MODEL_DEFAULT_CONFIG
 from data.data_utils import build_nx_graph_from_config, negative_sampling
 from data.data_loader import DataLoader
 from data.preprocess import preprocess
-from model.utils import set_random_seeds, get_device, EarlyStopMonitor
+from model.model_utils import (
+    set_random_seeds,
+    get_device,
+    get_result_path,
+    EarlyStopMonitor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +66,17 @@ def run_training(model_config: dict, data_config: dict) -> dict:
     set_random_seeds(cfg["SEED"])
     # Device
     device = get_device(cfg["DEVICE"])
-    # 模型保存路径
+    # 保存路径(模型检查点、最佳模型)
     timestamp = datetime.now().strftime("%Y%m%d%H%M")
-    CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    base_output_dir = os.path.join(CURRENT_DIR, "training_output", cfg["DATASET"])
-    ckpt_dir = os.path.join(base_output_dir, "saved_checkpoints", timestamp)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
     best_model_path = os.path.join(
-        base_output_dir, "best_models", timestamp, "best-model.pth"
+        current_dir,
+        cfg["BEST_MODEL_PATH"].format(dataset=cfg["DATASET"], timestamp=timestamp),
+    )
+
+    ckpt_dir = os.path.join(
+        current_dir,
+        cfg["CHECKPOINT_DIR"].format(dataset=cfg["DATASET"], timestamp=timestamp),
     )
 
     # 1. 数据加载与预处理
@@ -212,36 +221,9 @@ def run_training(model_config: dict, data_config: dict) -> dict:
     logger.info(
         f"✅ 训练完成! | {task_desc} | 数据集: {cfg['DATASET']} | 模型版本: {cfg['VERSION']} | 耗时: {execution_time:.2f}s ({execution_time / 60:.2f}min)"
     )
-    logger.info("=" * 60)
-
-    core_param_desc_list = [
-        f"SEED-{cfg['SEED']}",
-        f"TASK-{cfg['TASK_TYPE']}",
-        f"IL-{final_seq_len}",
-        f"WN-{final_walk_num}",
-        f"WL-{final_walk_len}",
-    ]
-    if cfg["TASK_TYPE"] == "I":
-        mask_percent = (
-            int(cfg["MASK_RATIO"] * 100)
-            if cfg["MASK_RATIO"] * 100 == int(cfg["MASK_RATIO"] * 100)
-            else cfg["MASK_RATIO"] * 100
-        )
-        mask_ratio_str = (
-            f"{mask_percent:.0f}%"
-            if cfg["MASK_RATIO"] * 100 % 1 == 0
-            else f"{mask_percent:.1f}%"
-        )
-        core_param_desc_list.append(f"MR-{mask_ratio_str}")
-
-    result_dir = os.path.join(
-        base_output_dir,
-        "results",
-        "_".join(core_param_desc_list),
-    )
-    os.makedirs(result_dir, exist_ok=True)
-    result_path = os.path.join(result_dir, f"IPNet-{cfg['VERSION']}.csv")
+    result_path = get_result_path(cfg, final_seq_len, final_walk_num, final_walk_len)
     logger.info(f"📁 结果文件保存至：{result_path}")
+    logger.info("=" * 60)
 
     need_header = not os.path.exists(result_path)
     with open(result_path, "a+", newline="") as f:
@@ -249,6 +231,7 @@ def run_training(model_config: dict, data_config: dict) -> dict:
         if need_header:
             writer.writerow(
                 [
+                    "Training_Date",
                     "Task_Type",
                     "Acc",
                     "AUC",
@@ -261,6 +244,7 @@ def run_training(model_config: dict, data_config: dict) -> dict:
             )
         writer.writerow(
             [
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 cfg["TASK_TYPE"],
                 test_acc * 100,
                 test_auc * 100,

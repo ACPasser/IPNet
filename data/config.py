@@ -75,6 +75,10 @@ MODEL_DEFAULT_CONFIG = {
     "LR": 1e-4,
     "THREAD_NUM": 5,
     "DEVICE": -1,  # -2:CPU, -1:MPS, ≥0:GPU
+    # 路径配置
+    "CHECKPOINT_DIR": "training_output/{dataset}/saved_checkpoints/{timestamp}",
+    "BEST_MODEL_PATH": "training_output/{dataset}/best_models/{timestamp}/best-model.pth",
+    "RESULT_PATH": "training_output/{dataset}/results/{core_params}/IPNet-{version}.csv",  # core_params是动态生成的参数组合
 }
 
 
