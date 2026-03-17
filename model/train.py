@@ -68,14 +68,11 @@ def run_training(model_config: dict, data_config: dict) -> dict:
     device = get_device(cfg["DEVICE"])
     # 保存路径(模型检查点、最佳模型)
     timestamp = datetime.now().strftime("%Y%m%d%H%M")
-    current_dir = os.path.dirname(os.path.abspath(__file__))
     best_model_path = os.path.join(
-        current_dir,
         cfg["BEST_MODEL_PATH"].format(dataset=cfg["DATASET"], timestamp=timestamp),
     )
 
     ckpt_dir = os.path.join(
-        current_dir,
         cfg["CHECKPOINT_DIR"].format(dataset=cfg["DATASET"], timestamp=timestamp),
     )
 

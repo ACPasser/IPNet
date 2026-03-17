@@ -99,7 +99,6 @@ def get_result_path(cfg, final_seq_len, final_walk_num, final_walk_len):
 
     # 测试结果路径
     result_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
         cfg["RESULT_PATH"].format(
             dataset=cfg["DATASET"], core_params=core_params_str, version=cfg["VERSION"]
         ),

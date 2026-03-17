@@ -45,7 +45,7 @@ data/**/*.csv
 
 # ===================== 通用忽略 =====================
 # 忽略训练输出目录（检查点/最佳模型/结果）
-model/training_output/
+training_output/
 *.pth
 *.pt
 *.ckpt
