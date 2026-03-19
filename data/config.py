@@ -50,8 +50,8 @@ DATA_CONFIGS = {
     },
 }
 
-# 模型的默认配置
-MODEL_DEFAULT_CONFIG = {
+# 训练默认配置
+DEFAULT_TRAIN_CONFIG = {
     # 基础配置
     "SEED": 19,
     # 是否预处理
@@ -60,29 +60,46 @@ MODEL_DEFAULT_CONFIG = {
     "DATASET": "UCI",
     "TASK_TYPE": "T",  # T: Transductive, I: Inductive
     "MASK_RATIO": 0.1,
-    # 普通参数
-    "VERSION": "mean",  # mean/att/w2v
-    "FEAT_DIM": 128,
-    "RNN_TYPE": "GRU",  # LSTM/GRU
-    "PADDING_NODE": 0,
-    # 核心超参
-    "IS_LEN": -1,  # -1: auto
-    "WALK_NUM": -1,  # -1: auto
-    "WALK_LEN": -1,  # -1: auto
     # 训练配置
     "EPOCH": 50,
     "BATCH_SIZE": 64,
     "LR": 1e-4,
     "THREAD_NUM": 5,
     "DEVICE": -1,  # -2:CPU, -1:MPS, ≥0:GPU
+    # 核心超参
+    "IS_LEN": -1,  # -1: auto
+    "WALK_NUM": -1,  # -1: auto
+    "WALK_LEN": -1,  # -1: auto
     # 路径配置
-    "CHECKPOINT_DIR": "training_output/{dataset}/saved_checkpoints/{timestamp}",
-    "BEST_MODEL_PATH": "training_output/{dataset}/best_models/{timestamp}/best-model.pth",
-    "RESULT_PATH": "training_output/{dataset}/results/{core_params}/IPNet-{version}.csv",  # core_params是动态生成的参数组合
+    "CHECKPOINT_PATH": "outputs/{dataset}/saved_checkpoints/{timestamp}/checkpoint-epoch-{epoch}.pth",
+    "BEST_MODEL_PATH": "outputs/{dataset}/best_models/{timestamp}/best-model.pth",
+    "RESULT_PATH": "outputs/{dataset}/results/{core_params}/IPNet-{version}.csv",  # core_params是动态生成的参数组合
+}
+
+# 模型默认参数(注意不能和DEFAULT_TRAIN_CONFIG中的配置重名)
+DEFAULT_MODEL_CONFIG = {
+    # 命令行参数
+    "VERSION": "mean",  # mean/att/w2v
+    "FEAT_DIM": 128,
+    "RNN_TYPE": "GRU",  # LSTM/GRU
+    "PADDING_NODE": 0,
+    "N_HEAD": 8,
+    "DROPOUT": 0.3,
+    # 其他参数
+    "FINAL_SEQ_LEN": None,
+    "FINAL_WALK_LEN": None,
+    # 参数保存地址, 用于后续加载
+    "PARAM_SAVE_CONFIG": {
+        "dir": "outputs/{dataset}/model_param/{timestamp}",
+        "node_feature": "node_feature.npy",
+        "interactions": "interactions.json",
+        "contexts": "contexts.json",
+        "other_params": "other_params.json",
+    },
 }
 
 
-def get_config(dataset: str):
+def get_data_config(dataset: str):
     """
     获取指定数据集的预处理配置(忽略大小写)
     :param dataset_name: 数据集名称

@@ -4,7 +4,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+import json
+from data.config import DEFAULT_MODEL_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class InteractionSequenceEncoder(nn.Module):
         time_dim: int,
         pos_dim: int,
         node_interactions: dict[int, list[tuple[int, float]]],
-        specified_seq_len: Optional[int] = None,
+        specified_seq_len: int | None = None,
         padding_node: int = 0,
         dropout_p: float = 0.1,
         device: torch.device = torch.device("cpu"),
@@ -308,7 +309,7 @@ class ContextEncoder(nn.Module):
         time_dim: int,
         pos_dim: int,
         contexts: dict[int, list[list[tuple[int, float]]]],
-        specified_walk_len: Optional[int] = None,
+        specified_walk_len: int | None = None,
         padding_node: int = 0,
         dropout_p: float = 0.1,
         device: torch.device = torch.device("cpu"),
@@ -784,41 +785,36 @@ class MergeLayer(nn.Module):
 
 
 class IPNet(nn.Module):
-    DEFAULT_PADDING_NODE = 0
-    DEFAULT_DROPOUT = 0.3
-    DEFAULT_N_HEAD = 8
-    DEFAULT_RNN_TYPE = "GRU"
-    DEFAULT_VERSION = "mean"
-    DEFAULT_DEVICE = torch.device("cpu")
-
     def __init__(
         self,
         node_feature: np.ndarray,
         interactions: dict[int, list[tuple[int, float]]],
         contexts: dict[int, list[list[tuple[int, float]]]],
-        ckpt_dir: str,
-        specified_seq_len: int | None = None,
-        specified_walk_len: int | None = None,
-        version: str = DEFAULT_VERSION,
-        rnn_type: str = DEFAULT_RNN_TYPE,
-        n_head: int = DEFAULT_N_HEAD,
-        dropout_p: float = DEFAULT_DROPOUT,
-        padding_node: int = DEFAULT_PADDING_NODE,
-        device: torch.device = DEFAULT_DEVICE,
+        final_seq_len: int | None = None,  # 指定的序列长度
+        final_walk_len: int | None = None,  # 指定的游走/窗口长度
+        version: str = "mean",
+        rnn_type: str = "GRU",
+        n_head: int = 8,
+        dropout_p: float = 0.3,
+        padding_node: int = 0,
+        device: torch.device = torch.device("cpu"),
     ):
         super().__init__()
         # 基础配置
         self.rnn_type = rnn_type.upper()
         self.version = version
-        self.ckpt_dir = ckpt_dir
-        os.makedirs(ckpt_dir, exist_ok=True)
         self.dropout_p = dropout_p
         self.padding_node = padding_node
+        self.n_head = n_head
         self.device = device
-
+        self.node_feature = node_feature
+        self.interactions = interactions
+        self.contexts = contexts
+        self.seq_len = final_seq_len
+        self.walk_len = final_walk_len
         # 节点特征初始化
-        self.node_num = node_feature.shape[0]
-        self.feat_dim = node_feature.shape[1]
+        self.node_num = self.node_feature.shape[0]
+        self.feat_dim = self.node_feature.shape[1]
         if self.version == "w2v":
             node_feat_tensor = torch.from_numpy(node_feature.astype(np.float32)).to(
                 device
@@ -842,8 +838,8 @@ class IPNet(nn.Module):
             node_num=self.node_num,
             time_dim=self.time_dim,
             pos_dim=self.pos_dim,
-            node_interactions=interactions,
-            specified_seq_len=specified_seq_len,
+            node_interactions=self.interactions,
+            specified_seq_len=self.seq_len,
             padding_node=self.padding_node,
             dropout_p=dropout_p,
             device=device,
@@ -864,8 +860,8 @@ class IPNet(nn.Module):
                 nodes_num=self.node_num,
                 time_dim=self.time_dim,
                 pos_dim=self.pos_dim,
-                contexts=contexts,
-                specified_walk_len=specified_walk_len,
+                contexts=self.contexts,
+                specified_walk_len=self.walk_len,
                 padding_node=self.padding_node,
                 dropout_p=self.dropout_p,
                 device=device,
@@ -895,36 +891,21 @@ class IPNet(nn.Module):
         self._print_model_info()
 
     def _print_model_info(self):
+        # fmt: off
         logger.info("✅ IPNet模型初始化完成")
-        logger.info(f"   ├─ 节点数: {self.node_num}（内置虚拟节点{self.padding_node}）")
-        # 1. 交互模式编码
-        if hasattr(self, "interaction_encoder"):
-            seq_len = (
-                self.interaction_encoder.seq_len
-                if hasattr(self.interaction_encoder, "seq_len")
-                else "未知"
-            )
-            logger.info(f"   ├─ 交互序列长度: {seq_len}")
-        # 2. 上下文编码
-        if hasattr(self, "ctx_encoder"):
-            ctx_walk_num = (
-                self.ctx_encoder.walk_num
-                if hasattr(self.ctx_encoder, "walk_num")
-                else "未知"
-            )
-            ctx_walk_len = (
-                self.ctx_encoder.walk_len
-                if hasattr(self.ctx_encoder, "walk_len")
-                else "未知"
-            )
-            logger.info(
-                f"   ├─ 上下文编码: 窗口数量: {ctx_walk_num} | 窗口长度: {ctx_walk_len} | 聚合方式: {self.version}"
-            )
-        logger.info(
-            f"   ├─ 节点特征维度: {self.feat_dim} | 时间编码维度: {self.time_dim} | 位置编码维度: {self.pos_dim}"
-        )
-        logger.info(f"   ├─ RNN类型: {self.rnn_type}")
-        logger.info(f"   └─ 设备: {self.device} | Dropout: {self.dropout_p}")
+        logger.info(f"   ├─ 节点数: {self.node_num}(内置虚拟节点{self.padding_node}) | 节点维度: {self.feat_dim}")
+        logger.info(f"   ├─ 交互序列长度: {self.seq_len}")
+        if self.version in ["mean", "att"]:
+            logger.info(f"   ├─ 上下文编码: 窗口数量: {self.ctx_encoder.walk_num} | 窗口长度: {self.walk_len} | 聚合方式: {self.version}")
+        else:
+            logger.info(f"   ├─ 上下文编码 - 聚合方式: {self.version}")
+        if self.version == "att":
+            logger.info(f"   ├─ 注意力头数: {self.n_head}")
+        logger.info(f"   ├─ 时间编码维度: {self.time_dim} | 位置编码维度: {self.pos_dim}")
+        logger.info(f"   ├─ RNN: {self.rnn_type}")
+        logger.info(f"   ├─ Dropout: {self.dropout_p}")
+        logger.info(f"   └─ Device: {self.device}")
+        # fmt: on
 
     def forward(self, edges: torch.Tensor, return_logits: bool = False) -> torch.Tensor:
         """
@@ -964,9 +945,8 @@ class IPNet(nn.Module):
         # --------------------------- 1. 交互模式特征 ---------------------------
         interaction_feat = self.interaction_encoder(nodes)  # [B, L, time_dim+pos_dim]
         interaction_feat = self.sequence_aggregator(interaction_feat)  # [B, model_dim]
-        # return interaction_feat
 
-        # # --------------------------- 2. 上下文高阶特征 ---------------------------
+        # --------------------------- 2. 上下文高阶特征 ---------------------------
         if self.version == "w2v":
             ctx_feat = self.node_embed(nodes)
         else:
@@ -976,77 +956,72 @@ class IPNet(nn.Module):
         # Final Embeds
         return torch.cat([interaction_feat, ctx_feat], dim=-1)
 
-    def get_checkpoint_path(self, epoch: int) -> str:
-        """获取检查点路径"""
-        return os.path.join(self.ckpt_dir, f"checkpoint-epoch-{epoch}.pth")
-
-    def save_checkpoint(
-        self,
-        epoch: int,
-        optimizer: torch.optim.Optimizer = None,
-        loss: float = 0.0,
-        path: str = None,
-    ):
+    def save_init_param(self, param_save_config: dict) -> str:
         """
-        保存检查点
-        Args:
-            epoch: 训练轮数
-            optimizer: 优化器实例
-            loss: 当前轮次的loss值
-            path: 检查点保存路径(可选), 不指定则使用self.get_checkpoint_path(epoch)生成路径
+        保存模型初始化参数(供后续加载模型使用)
         """
-        ckpt_path = path if path is not None else self.get_checkpoint_path(epoch)
+        base_dir = param_save_config["dir"]
+        os.makedirs(base_dir, exist_ok=True)
+        try:
+            # 1. 保存节点特征（npy格式）
+            node_feature_path = os.path.join(
+                base_dir, param_save_config["node_feature"]
+            )
+            np.save(node_feature_path, self.node_feature)
 
-        # 确保保存目录存在
-        ckpt_dir = os.path.dirname(ckpt_path)
-        if not os.path.exists(ckpt_dir):
-            os.makedirs(ckpt_dir, exist_ok=True)
+            # tuple => list 的递归函数（解决JSON无法序列化tuple的问题）
+            def convert_tuple_to_list(obj):
+                if isinstance(obj, tuple):
+                    return list(obj)
+                elif isinstance(obj, dict):
+                    return {str(k): convert_tuple_to_list(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_tuple_to_list(i) for i in obj]
+                return obj
 
-        checkpoint_dict = {
-            "epoch": epoch,
-            "model_state_dict": self.state_dict(),
-            "loss": loss,
-        }
-        if optimizer is not None:
-            checkpoint_dict["optimizer_state_dict"] = optimizer.state_dict()
+            # 2. 保存交互序列和上下文窗口(JSON格式)
+            interactions_path = os.path.join(
+                base_dir, param_save_config["interactions"]
+            )
+            with open(interactions_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    convert_tuple_to_list(self.interactions),
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
 
-        torch.save(checkpoint_dict, ckpt_path)
-        # logger.info(f"📌 检查点已保存至: {ckpt_path}")
+            contexts_path = os.path.join(base_dir, param_save_config["contexts"])
+            with open(contexts_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    convert_tuple_to_list(self.contexts),
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
 
-    def load_checkpoint(
-        self,
-        epoch: int = -1,
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        path: str = None,
-    ) -> dict:
-        """
-        加载检查点
-        Args:
-            epoch: 要加载的训练轮数(仅在path=None时生效), 默认-1
-            optimizer: 优化器实例(可选)，传入则恢复优化器状态
-            path: 检查点文件路径(可选), 指定则优先加载该路径, 忽略epoch参数
-        Returns:
-            加载的检查点字典(包含epoch、model_state_dict、optimizer_state_dict、loss等)
-        Raises:
-            FileNotFoundError: 检查点文件不存在时抛出
-        """
-        if path is not None:
-            ckpt_path = path
-        else:
-            if epoch < 0:
-                raise ValueError("当path=None时, 必须指定有效的epoch(≥0)")
-            ckpt_path = self.get_checkpoint_path(epoch)
+            # 3. 保存其他参数
+            model_config = DEFAULT_MODEL_CONFIG.copy()
+            model_config["VERSION"] = self.version
+            model_config["RNN_TYPE"] = self.rnn_type
+            model_config["PADDING_NODE"] = self.padding_node
+            model_config["N_HEAD"] = self.n_head
+            model_config["DROPOUT"] = self.dropout_p
+            model_config["FINAL_SEQ_LEN"] = self.seq_len
+            model_config["FINAL_WALK_LEN"] = self.walk_len
 
-        if not os.path.exists(ckpt_path):
-            raise FileNotFoundError(f"检查点文件不存在: {ckpt_path}")
+            other_params_path = os.path.join(
+                base_dir, param_save_config["other_params"]
+            )
 
-        checkpoint = torch.load(ckpt_path, map_location=self.device, weights_only=False)
-        self.load_state_dict(checkpoint["model_state_dict"])
+            with open(other_params_path, "w", encoding="utf-8") as f:
+                json.dump(model_config, f, indent=2, ensure_ascii=False)
 
-        if optimizer is not None:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            logger.info("✅ IPNet模型初始化参数保存完成")
+            logger.info(f"   ├─ 节点特征已保存至: {node_feature_path}")
+            logger.info(f"   ├─ 交互序列已保存至: {interactions_path}")
+            logger.info(f"   ├─ 上下文窗口已保存至: {contexts_path}")
+            logger.info(f"   └─ 其他初始化参数已保存至: {other_params_path}")
 
-        # load_epoch = checkpoint.get('epoch', '未知')
-        # load_loss = checkpoint.get('loss', '未知')
-        # logger.info(f"📌 已加载检查点: {ckpt_path} (epoch: {load_epoch}, loss: {load_loss:.4f})")
-        return checkpoint
+        except OSError as e:
+            raise OSError(f"保存初始化配置失败: {str(e)}") from e

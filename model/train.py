@@ -12,13 +12,10 @@ from tqdm import tqdm
 from model.IPNet import IPNet
 from datetime import datetime
 from gensim.models import Word2Vec
-from data.config import MODEL_DEFAULT_CONFIG
 from data.data_utils import build_nx_graph_from_config, negative_sampling
 from data.data_loader import DataLoader
-from data.preprocess import preprocess
 from model.model_utils import (
-    set_random_seeds,
-    get_device,
+    set_random_seed,
     get_result_path,
     EarlyStopMonitor,
 )
@@ -26,57 +23,37 @@ from model.model_utils import (
 logger = logging.getLogger(__name__)
 
 
-def run_training(model_config: dict, data_config: dict) -> dict:
+def run_experiment(config: dict, data_config: dict, device: torch.device) -> dict:
     """
-    核心训练函数：接收配置字典，完成数据加载、模型训练、测试、结果保存
+    运行完整实验：加载数据 -> 训练模型 -> 测试评估 -> 保存结果
     Args:
-        config: 训练配置字典(DEFAULT_MODEL_CONFIG)
+        config: 合并后的配置(包含训练配置和模型配置)
+        data_config: 数据集配置(需先执行预处理)
     Returns:
         dict: 包含测试指标、模型路径、耗时等结果
     """
-    # 以默认配置为基础，用自定义配置覆盖需要修改的参数
-    final_config = MODEL_DEFAULT_CONFIG.copy()
-    final_config.update(model_config)
-    cfg = final_config  # 简化变量名
+    cfg = config  # 简化变量名
 
-    # 配置校验
+    # fmt: off
+    logger.info("=" * 60)
+    task_desc = ("Transductive (直推式)" if cfg["TASK_TYPE"] == "T" else "Inductive (归纳式)")
+    logger.info(f"🚀 实验启动 - {task_desc} | 数据集: {cfg['DATASET']} | 模型版本: {cfg['VERSION']}")
+
+    # 配置校验(待补全, 不急, TODO)
     if cfg["PADDING_NODE"] < 0:
-        raise ValueError(
-            f"Padding node ID must be non-negative! Current: {cfg['PADDING_NODE']}"
-        )
+        raise ValueError(f"Padding node ID must be non-negative! Current: {cfg['PADDING_NODE']}")
     if cfg["TASK_TYPE"] == "I" and not (0 < cfg["MASK_RATIO"] < 1):
-        raise ValueError(
-            f"Inductive task requires mask_ratio in (0,1)! Current: {cfg['MASK_RATIO']}"
-        )
+        raise ValueError(f"Inductive task requires mask_ratio in (0,1)! Current: {cfg['MASK_RATIO']}")
     if cfg["TASK_TYPE"] == "I":
         mask_str = str(cfg["MASK_RATIO"])
         if "." in mask_str and len(mask_str.split(".")[1]) > 2:
-            raise ValueError(
-                f"mask_ratio must have at most 2 decimal places! Current: {cfg['MASK_RATIO']}"
-            )
-
-    if cfg["PRE_PROCESS"]:
-        try:
-            preprocess(dataset_name=cfg["DATASET"])
-        except Exception as e:
-            logger.error(f"❌ 预处理数据集失败: {str(e)}", exc_info=True)
-            raise  # 预处理失败则终止训练
+            raise ValueError(f"mask_ratio must have at most 2 decimal places! Current: {cfg['MASK_RATIO']}")
+    # fmt: on
 
     # 设置随机种子
-    set_random_seeds(cfg["SEED"])
-    # Device
-    device = get_device(cfg["DEVICE"])
-    # 保存路径(模型检查点、最佳模型)
-    timestamp = datetime.now().strftime("%Y%m%d%H%M")
-    best_model_path = os.path.join(
-        cfg["BEST_MODEL_PATH"].format(dataset=cfg["DATASET"], timestamp=timestamp),
-    )
+    set_random_seed(cfg["SEED"])
 
-    ckpt_dir = os.path.join(
-        cfg["CHECKPOINT_DIR"].format(dataset=cfg["DATASET"], timestamp=timestamp),
-    )
-
-    # 1. 数据加载与预处理
+    # 1. 数据加载
     start_time = time.time()
     graph = build_nx_graph_from_config(data_config)
     num_nodes = len(graph.nodes())
@@ -141,11 +118,11 @@ def run_training(model_config: dict, data_config: dict) -> dict:
             negative=final_seq_len,
             seed=cfg["SEED"],
         )
+        # fmt: off
         logger.info("✅ Word2Vec训练完成")
-        logger.info(
-            f"   ├─ 节点数: {len(word2vec.wv.index_to_key)} | 特征维度: {word2vec.wv.vector_size}"
-        )
+        logger.info(f"   ├─ 节点数: {len(word2vec.wv.index_to_key)} | 特征维度: {word2vec.wv.vector_size}")
         logger.info(f"   └─ 游走次数: {final_walk_num} | 游走长度: {final_walk_len}")
+        # fmt: on
 
         for node in word2vec.wv.index_to_key:
             node_feature[node] = word2vec.wv.get_vector(node)
@@ -155,15 +132,39 @@ def run_training(model_config: dict, data_config: dict) -> dict:
         node_feature=node_feature,
         interactions=interactions,
         contexts=contexts,
-        ckpt_dir=ckpt_dir,
-        specified_seq_len=final_seq_len,
-        specified_walk_len=final_walk_len,
+        final_seq_len=final_seq_len,
+        final_walk_len=final_walk_len,
         version=cfg["VERSION"],
         rnn_type=cfg["RNN_TYPE"],
+        n_head=cfg["N_HEAD"],
+        dropout_p=cfg["DROPOUT"],
         padding_node=cfg["PADDING_NODE"],
         device=device,
     )
-    model.to(device)
+
+    # 训练过程中间文件保存路径
+    # 最佳模型
+    timestamp = datetime.now().strftime("%Y%m%d%H%M")
+    best_model_path = os.path.join(
+        cfg["BEST_MODEL_PATH"].format(dataset=cfg["DATASET"], timestamp=timestamp),
+    )
+    os.makedirs(os.path.dirname(best_model_path), exist_ok=True)
+    # 模型检查点
+    ckpt_path_fmt = cfg["CHECKPOINT_PATH"].format(
+        dataset=cfg["DATASET"],
+        timestamp=timestamp,
+        epoch="{epoch}",  # 保留 {epoch} 占位符
+    )
+    os.makedirs(os.path.dirname(ckpt_path_fmt), exist_ok=True)
+    # 模型初始化参数
+    model.save_init_param(
+        {
+            **cfg["PARAM_SAVE_CONFIG"],
+            "dir": cfg["PARAM_SAVE_CONFIG"]["dir"].format(
+                dataset=cfg["DATASET"], timestamp=timestamp
+            ),
+        }
+    )
 
     # 6. 训练
     train_data, val_data, test_data = data_loader.preprocess(
@@ -179,6 +180,7 @@ def run_training(model_config: dict, data_config: dict) -> dict:
         lr=cfg["LR"],
         seed=cfg["SEED"],
         best_model_path=best_model_path,
+        ckpt_path_fmt=ckpt_path_fmt,
     )
 
     # 7. 测试
@@ -210,16 +212,12 @@ def run_training(model_config: dict, data_config: dict) -> dict:
     logger.info("└─────────────┴──────────┴───────────┘")
 
     # 8. 结果保存
-    execution_time = time.time() - start_time
-    task_type = cfg["TASK_TYPE"]
-    task_desc = "Transductive (直推式)" if task_type == "T" else "Inductive (归纳式)"
+    train_time = time.time() - start_time
 
     # 核心完成提示
-    logger.info(
-        f"✅ 训练完成! | {task_desc} | 数据集: {cfg['DATASET']} | 模型版本: {cfg['VERSION']} | 耗时: {execution_time:.2f}s ({execution_time / 60:.2f}min)"
-    )
+    logger.info(f"✅ 实验结束完成 - 耗时: {train_time:.2f}s ({train_time / 60:.2f}min)")
     result_path = get_result_path(cfg, final_seq_len, final_walk_num, final_walk_len)
-    logger.info(f"📁 结果文件保存至：{result_path}")
+    logger.info(f"📁 测试结果保存至：{result_path}")
     logger.info("=" * 60)
 
     need_header = not os.path.exists(result_path)
@@ -241,13 +239,13 @@ def run_training(model_config: dict, data_config: dict) -> dict:
             )
         writer.writerow(
             [
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                datetime.strptime(timestamp, "%Y%m%d%H%M").strftime("%Y-%m-%d %H:%M"),
                 cfg["TASK_TYPE"],
                 test_acc * 100,
                 test_auc * 100,
                 test_ap * 100,
                 test_f1 * 100,
-                execution_time,
+                train_time,
                 cfg["SEED"],
                 best_model_path,
             ]
@@ -259,9 +257,8 @@ def run_training(model_config: dict, data_config: dict) -> dict:
         "test_auc": test_auc,
         "test_ap": test_ap,
         "test_f1": test_f1,
-        "execution_time": execution_time,
-        "best_model_path": best_model_path,
-        "config": final_config,
+        "train_time": train_time,
+        "config": config,
     }
 
 
@@ -272,8 +269,9 @@ def train(
     batch_size: int = 64,
     epochs: int = 50,
     lr: float = 1e-4,
-    seed=None,
+    ckpt_path_fmt: str = None,
     best_model_path: str = None,
+    seed: int = None,
 ) -> None:
     """
     模型训练函数
@@ -427,23 +425,23 @@ def train(
         #             f"Val正负样本概率重叠度（正最小-负最大）: {overlap:.4f} (＞0=区分度好)"
         #         )
 
-        logger.info(f"=== Epoch {epoch + 1} Results (lr: {current_lr:.6f}) ===")
-        logger.info(f"Train Loss: {np.mean(epoch_metrics['loss']):.4f}")
-        logger.info(
-            f"Train Acc: {np.mean(epoch_metrics['acc']):.4f} | Val Acc: {val_acc:.4f}"
-        )
-        logger.info(
-            f"Train AUC: {np.mean(epoch_metrics['auc']):.4f} | Val AUC: {val_auc:.4f}"
-        )
-        logger.info(
-            f"Train AP: {np.mean(epoch_metrics['ap']):.4f} | Val AP: {val_ap:.4f}"
-        )
-        logger.info(
-            f"Train F1: {np.mean(epoch_metrics['f1']):.4f} | Val F1: {val_f1:.4f}"
-        )
+        # fmt: off
+        logger.info("=" * 60)
+        logger.info(f"📊 Epoch {epoch + 1} Results (lr: {current_lr:.6f})")
+        logger.info("-" * 60)
+        logger.info(f"  Train Loss: {np.mean(epoch_metrics['loss']):.4f}")
+        logger.info(f"  Train Acc:  {np.mean(epoch_metrics['acc']):6.4f}   |   Val Acc:  {val_acc:6.4f}")
+        logger.info(f"  Train AUC:  {np.mean(epoch_metrics['auc']):6.4f}   |   Val AUC:  {val_auc:6.4f}")
+        logger.info(f"  Train AP:   {np.mean(epoch_metrics['ap']):6.4f}   |   Val AP:   {val_ap:6.4f}")
+        logger.info(f"  Train F1:   {np.mean(epoch_metrics['f1']):6.4f}   |   Val F1:   {val_f1:6.4f}")
+        logger.info("=" * 60)
+        # fmt: on
 
         # save checkpoint
-        model.save_checkpoint(epoch, optimizer, np.mean(epoch_metrics["loss"]))
+        if ckpt_path_fmt is not None:
+            ckpt_path = ckpt_path_fmt.format(epoch=epoch)
+            torch.save(model.state_dict(), ckpt_path)
+            # logger.info(f"📌 检查点已保存至: {ckpt_path}")
 
         # early stop check
         if early_stopper.early_stop_check(val_auc):
@@ -451,10 +449,13 @@ def train(
             break
 
     if best_model_path is not None:
-        best_model_dir = os.path.dirname(best_model_path)
-        if best_model_dir:
-            os.makedirs(best_model_dir, exist_ok=True)
-        model.load_checkpoint(epoch=early_stopper.best_epoch)
+        if ckpt_path_fmt is None:
+            raise ValueError("保存最佳模型需要提供 ckpt_path_fmt 参数")
+        ckpt_path = ckpt_path_fmt.format(epoch=early_stopper.best_epoch)
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"检查点文件不存在: {ckpt_path}")
+        device = next(model.parameters()).device
+        model.load_state_dict(torch.load(ckpt_path, map_location=device))
         torch.save(model.state_dict(), best_model_path)
 
         if is_early_stopped:
@@ -464,7 +465,7 @@ def train(
 
         logger.info(f"✅ 模型训练结束: {stop_type}")
         logger.info(f"   ├─ 最优轮次: {early_stopper.best_epoch + 1}")
-        logger.info(f"   └─ 最优模型已保存至: {best_model_path}")
+        logger.info(f"   └─ 最优模型参数字典已保存至: {best_model_path}")
 
 
 def eval_one_epoch(

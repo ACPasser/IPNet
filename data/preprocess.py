@@ -2,7 +2,7 @@ import logging
 import os
 import pandas as pd
 
-from data.config import get_config
+from data.config import get_data_config
 from data.data_utils import read_file_norm_ws, trans_id
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ def preprocess(config=None, dataset_name=None):
     if config is None:
         if dataset_name is None:
             raise ValueError("至少传入 config 或 dataset_name 一种")
-        config = get_config(dataset_name)
+        config = get_data_config(dataset_name)
 
     # 1. 读取原始数据
     try:

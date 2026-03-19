@@ -6,13 +6,12 @@ import pandas as pd
 import random
 import networkx as nx
 from datetime import datetime
-from typing import Any, List, Optional, Union
 
 
 logger = logging.getLogger(__name__)
 
 
-def trans_id(nid: Any) -> str:
+def trans_id(nid: any) -> str:
     """
     节点ID匿名化
     Args:
@@ -132,8 +131,8 @@ def split_snap_by_uniform(
 
 
 def normalize_whitespace(
-    input_data: Union[str, List[str], pd.Series], keep_empty_lines: bool = False
-) -> Union[str, List[str], pd.Series]:
+    input_data: str | list[str] | pd.Series, keep_empty_lines: bool = False
+) -> str | list[str] | pd.Series:
     """
     统一归一化空白字符: 将任意空白字符(空格、\t、\n、多个连续空格)替换为单个空格
     Args:
@@ -181,7 +180,7 @@ def normalize_whitespace(
 def read_file_norm_ws(
     file_path: str,
     skip_rows: int = 0,
-    col_names: Optional[List[str]] = None,
+    col_names: list[str] | None = None,
     encoding: str = "utf-8",
 ) -> pd.DataFrame:
     """
@@ -254,13 +253,17 @@ def build_nx_graph_from_config(config: dict):
     time_col = config.get("time_col", "time")  # 时间列名，默认'time'
 
     if not os.path.exists(graph_path):
-        logger.error(f"图数据文件不存在(配置字段: output_graph_path): {graph_path}")
+        logger.error(
+            f"图数据文件不存在(配置字段: output_graph_path): {graph_path}, 请检查是否进行过预处理!"
+        )
         raise FileNotFoundError(
             f"Graph file not found (config: output_graph_path): {graph_path}"
         )
 
     if not os.path.exists(node_path):
-        logger.error(f"节点集文件不存在(配置字段: output_node_dir): {node_path}")
+        logger.error(
+            f"节点集文件不存在(配置字段: output_node_dir): {node_path}, 请检查是否进行过预处理!"
+        )
         raise FileNotFoundError(
             f"Nodes file not found (config: output_node_dir): {node_path}"
         )
