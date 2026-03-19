@@ -71,11 +71,11 @@ tqdm==4.67.3
 data/
 └── UCI/  # 数据集名称
     ├── 0.origin/
-    │   └── graph.csv  # "源节点ID" "目标节点ID" "边权重" "时间戳"（空白字符分隔）
-    └── UCI.py/	# 预处理脚本
+    │   └── graph.txt  # 核心列："源节点ID"、"目标节点ID"、"时间戳"（空白字符分隔）
+    └── preprocess.py/	# 预处理脚本
 ```
 
-2. 仓库内置 IA、UCI 两个小数据集，可作为参考；自定义数据集需遵循上述格式。
+2. 仓库内置 IA、UCI 两个小的公开数据集以及自建的 ZhiHu 数据集（仅提供预处理后的 csv 格式文件）；自定义数据集需遵循上述格式并参考预处理脚本。
 
 # 快速运行
 
@@ -91,14 +91,17 @@ python main.py --dataset UCI --ty I --mask 0.15 --il 20 --wn 20 --wl 20 --device
 
 # 结果输出
 
-1. **模型保存**：最优模型自动保存至 `model/[数据集]/best_models/[时间戳]/best-model.pth`；
-2. **训练日志**：终端实时输出每轮训练 / 验证的 Acc、AUC、AP、F1 指标；
-3. **结果文件**：测试结果保存至 `results/[数据集]/[核心参数组合]/IPNet-[版本].csv`，包含字段：
+1. **模型保存**（可在 data/config.py 中修改默认配置）：
+   1. 最优模型的参数字典保存至：`outputs/[数据集]/best_models/[时间戳]/best-model.pth`；
+   2. 初始化时的参数保存至目录：`outputs/[数据集]/model_param/{时间戳}` 下，包括节点特征、交互序列、上下文窗口及其他参数；
+2. **训练日志**：暂时仅输出到终端，输出实验细节、每轮训练 / 验证及最终测试的 Acc、AUC、AP、F1 指标等；
+3. **结果文件**：测试结果保存至：`outputs/[数据集]/results/[核心参数组合]/IPNet-[版本].csv`，包含以下核心字段：
+   - Training_Date：实验运行日期
    - Task_Type：任务类型（T/I）
    - Acc/AUC/AP/F1：测试集评估指标（百分比）
    - Time (s)：总运行时间
    - Seed：随机种子
-   - Best_Model_Path：最优模型路径
+   - Best_Model_Path：最优模型的参数字典保存路径
 
 # 模型结构
 
