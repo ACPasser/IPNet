@@ -23,12 +23,11 @@ from model.model_utils import (
 logger = logging.getLogger(__name__)
 
 
-def train_and_eval(config: dict, data_config: dict, device: torch.device) -> IPNet:
+def train_and_eval(config: dict, device: torch.device) -> IPNet:
     """
     运行完整实验：加载、划分数据 -> 训练模型 -> 测试评估 -> 保存结果
     Args:
-        config: 合并后的配置(包含训练配置和模型配置)
-        data_config: 数据集配置(需先执行预处理)
+        config: 合并后的配置(包含: 数据集配置、训练配置和模型配置)
     Returns:
         dict: 训练后的模型
     """
@@ -55,7 +54,7 @@ def train_and_eval(config: dict, data_config: dict, device: torch.device) -> IPN
 
     # 1. 数据加载
     start_time = time.time()
-    data_loader = DataLoader(data_config)
+    data_loader = DataLoader(cfg)
     num_nodes = data_loader.num_nodes
 
     # 2. 交互序列提取
@@ -438,7 +437,6 @@ def train(
 def test_model(
     model: IPNet,
     config: dict,
-    data_config: dict = None,
     test_data: dict = None,
 ) -> dict:
     """
@@ -446,21 +444,17 @@ def test_model(
 
     Args:
         model: 待测试的IPNet模型
-        config: 训练配置
-        data_config: 数据集配置, 传入则重新构造测试数据
-        test_data: 处理好的测试数据字典(优先级高于data_config)
+        config: 训练配置 + 数据集配置
+        test_data: 处理好的测试数据字典(优先)
 
     Returns:
         dict: 包含测试指标的字典 {acc, ap, f1, auc}
     """
-    # check
-    if test_data is None and data_config is None:
-        raise ValueError("必须传入 data_config 或 test_data 其中一个参数！")
 
-    # 方式1：传入data_config，自动构建测试数据
+    # 方式1：根据数据集配置, 构建测试数据
     if test_data is None:
         logger.info("📥 从data_config构建测试数据...")
-        data_loader = DataLoader(data_config)
+        data_loader = DataLoader(config)
         _, _, test_data = data_loader.preprocess(
             config["TASK_TYPE"], config["MASK_RATIO"], config["SEED"]
         )

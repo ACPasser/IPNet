@@ -1,27 +1,25 @@
 import argparse
 import logging
-from data.config import DEFAULT_TRAIN_CONFIG, DEFAULT_MODEL_CONFIG
+from data.config import DEFAULT_TRAIN_CONFIG, DEFAULT_MODEL_CONFIG, get_data_config
 from ipnet_toolkit import IPNetToolkit
 
 logger = logging.getLogger(__name__)
 
 
 def main(args: argparse.Namespace) -> dict:
-    """
-    命令行入口函数: 将命令行参数转换为配置字典, 调用run_training
-    Args:
-        args: 命令行参数对象
-    Returns:
-        dict: 训练结果
-    """
-    # 转字典
+    # 显式传入的参数
     args_dict = vars(args)
-
-    # 只保留显式传入的参数
     input_configs = {k: v for k, v in args_dict.items() if v is not None}
 
-    # 模型操作封装在 IPNetToolkit 中, 方便外部调用
-    toolkit = IPNetToolkit(input_configs)
+    final_config = {
+        **get_data_config(input_configs["DATASET"]),
+        **DEFAULT_TRAIN_CONFIG,
+        **DEFAULT_MODEL_CONFIG,
+        **input_configs,
+    }
+
+    # 通过 IPNetToolkit 调用
+    toolkit = IPNetToolkit(final_config)
     # 0. preprocess
     # toolkit.run_preprocess()
     # 1. Train

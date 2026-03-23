@@ -2,7 +2,6 @@ import logging
 import numpy as np
 import torch
 import pandas as pd
-from data.config import DEFAULT_TRAIN_CONFIG, DEFAULT_MODEL_CONFIG, get_data_config
 from data.preprocess import preprocess
 from data.data_utils import trans_id
 from model.ipnet import IPNet
@@ -15,11 +14,8 @@ logger = logging.getLogger(__name__)
 class IPNetToolkit:
     """IPNet模型工具类: 功能封装, 方便外部调用"""
 
-    def __init__(
-        self, input_configs: dict | None = None, data_config: dict | None = None
-    ):
-        self.config = {**DEFAULT_TRAIN_CONFIG, **DEFAULT_MODEL_CONFIG, **input_configs}
-        self.data_config = data_config or get_data_config(self.config["DATASET"])
+    def __init__(self, config: dict):
+        self.config = config  # 包含: 数据集配置、训练配置、模型配置
         self.device = get_device(self.config["DEVICE"])
         self.raw2id: dict[str, int] = {}
         self.IPNet = None
@@ -28,8 +24,8 @@ class IPNetToolkit:
         """构建 node2id 映射"""
         try:
             mapping_df = pd.read_csv(
-                self.data_config["output_nodes_mapping_path"],
-                sep=self.data_config["csv_sep"],
+                self.config["output_nodes_mapping_path"],
+                sep=self.config["csv_sep"],
             )
             self.raw2id = dict(zip(mapping_df["original_id"], mapping_df["numeric_id"]))
             logger.info(f"✅ 训练节点映射加载完成(节点数: {len(self.raw2id)})")
@@ -42,14 +38,14 @@ class IPNetToolkit:
         # fmt: off
         should_run = (do_preprocess if do_preprocess is not None else self.config["PRE_PROCESS"])
         if should_run:
-            preprocess(self.data_config)
-        self.IPNet = train_and_eval(config=self.config, data_config=self.data_config, device=self.device)
+            preprocess(self.config)
+        self.IPNet = train_and_eval(config=self.config, device=self.device)
         self._load_node_mapping()
         # fmt: on
 
     def run_preprocess(self):
         """手动触发预处理"""
-        preprocess(self.data_config)
+        preprocess(self.config)
 
     def load_best_model(self) -> IPNet:
         """加载训练最佳模型"""
@@ -66,7 +62,7 @@ class IPNetToolkit:
     def test_model(self) -> dict:
         """测试当前模型"""
         self._check_model_loaded()
-        return test_model(self.IPNet, self.config, data_config=self.data_config)
+        return test_model(self.IPNet, config=self.config)
 
     def predict(
         self,
