@@ -6,7 +6,7 @@ import os
 import re
 import json
 from datetime import datetime
-from model.IPNet import IPNet
+from model.ipnet import IPNet
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -202,11 +202,9 @@ def get_state_dict_path(config: dict) -> tuple[str, str]:
     checked_dirs = []
     for ts_dir in timestamp_dirs:
         checked_dirs.append(ts_dir.name)
-
         state_dict_path = config["BEST_MODEL_PATH"].format(
             dataset=config["DATASET"], timestamp=ts_dir.name
         )
-
         if os.path.exists(state_dict_path):
             # fmt: off
             fmt_timestamp = datetime.strptime(ts_dir.name, "%Y%m%d%H%M").strftime("%Y-%m-%d %H:%M")

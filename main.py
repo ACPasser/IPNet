@@ -1,7 +1,9 @@
 import argparse
 import logging
-from data.config import DEFAULT_TRAIN_CONFIG, DEFAULT_MODEL_CONFIG, get_data_config
+from data.config import DEFAULT_TRAIN_CONFIG, DEFAULT_MODEL_CONFIG
 from ipnet_toolkit import IPNetToolkit
+
+logger = logging.getLogger(__name__)
 
 
 def main(args: argparse.Namespace) -> dict:
@@ -20,11 +22,22 @@ def main(args: argparse.Namespace) -> dict:
 
     # 模型操作封装在 IPNetToolkit 中, 方便外部调用
     toolkit = IPNetToolkit(input_configs)
-
+    # 0. preprocess
+    # toolkit.run_preprocess()
     # 1. Train
-    # toolkit.train(get_data_config(input_configs["DATASET"]))
-    # 2. Load Best Model
-    toolkit.load_best_model()
+    toolkit.run_pipeline(do_preprocess=False)
+
+    # 2. Load Model
+    # toolkit.load_best_model()
+
+    # 3. Test Model
+    toolkit.test_model()
+
+    # 4. Predict
+    to_predict = [(1, 2), (3, 4)]  # 节点原始ID
+    scores = toolkit.predict(to_predict)
+    logger.info(f"🔮 预测完成！输入样本数: {len(to_predict)}, 结果维度: {scores.shape}")
+    logger.info(f"📊 预测分数 (前5个): {scores[:5]}")
 
 
 if __name__ == "__main__":
@@ -59,11 +72,9 @@ if __name__ == "__main__":
     parser.add_argument("--v", dest="VERSION", help=f"IPNet version: mean/att/w2v (default: {DEFAULT_MODEL_CONFIG['VERSION']})")
     parser.add_argument("--fd", dest="FEAT_DIM", type=int, help=f"Feature dimension (default: {DEFAULT_MODEL_CONFIG['FEAT_DIM']})")
     parser.add_argument("--rnn", dest="RNN_TYPE", help=f"RNN type: LSTM/GRU (default: {DEFAULT_MODEL_CONFIG['RNN_TYPE']})")
-    parser.add_argument("--pd", dest="PADDING_NODE", type=int, help=f"Padding node ID (default: {DEFAULT_MODEL_CONFIG['PADDING_NODE']})")
     parser.add_argument("--nh", dest="N_HEAD", type=int, help=f"Number of attention heads (default: {DEFAULT_MODEL_CONFIG['N_HEAD']})")
     parser.add_argument("--do", dest="DROPOUT", type=float, help=f"Dropout rate (default: {DEFAULT_MODEL_CONFIG['DROPOUT']})")
     # fmt: on
 
     args = parser.parse_args()
-    # 执行训练并返回结果
-    result = main(args)
+    main(args)

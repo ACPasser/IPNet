@@ -3,7 +3,7 @@ import os
 import pandas as pd
 
 from data.config import get_data_config
-from data.data_utils import read_file_norm_ws, trans_id
+from data.data_utils import read_file_norm_ws, trans_id, save_nodes_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -20,36 +20,45 @@ def preprocess(config=None, dataset_name=None):
             raise ValueError("至少传入 config 或 dataset_name 一种")
         config = get_data_config(dataset_name)
 
-    # 1. 读取原始数据
     try:
+        # 1. 读取原始数据
         df = read_file_norm_ws(
             file_path=config["input_file_path"],
             skip_rows=config["skip_rows"],
             col_names=config["col_names"],
         )
-        logger.info(f"✅ 数据集加载成功: {config['input_file_path']} (行数: {len(df)})")
+        logger.info(f"✅ 数据集加载完成: {config['input_file_path']} (行数: {len(df)})")
 
-        # 匿名化处理
+        # 2. 按时间列升序排列
+        time_col = config["time_col"]  # 时间列需是数值型或日期型
+        if time_col in df.columns:
+            df[time_col] = pd.to_numeric(df[time_col], errors="raise")
+            df = df.sort_values(by=time_col, ascending=True).reset_index(drop=True)
+        else:
+            logger.error(f"⚠️ 未在数据集中找到时间列 [{time_col}]")
+
         source_col, target_col = config["node_cols"]
+        # 3. 保存节点(全部节点)映射: 原始ID -> 匿名化ID -> 数字ID
+        save_nodes_mapping(
+            nodes_iterable=pd.concat([df[source_col], df[target_col]]).unique(),
+            output_path=config["output_nodes_mapping_path"],
+            sep=config["csv_sep"],
+        )
+
+        # 4. 匿名化处理
         df[[source_col, target_col]] = df[[source_col, target_col]].apply(
             lambda x: x.map(trans_id)
         )
 
-        # 保存csv格式图数据
+        # 5. 保存图数据
         output_graph_dir = os.path.dirname(config["output_graph_path"])
         if output_graph_dir:
             os.makedirs(output_graph_dir, exist_ok=True)
         df.to_csv(config["output_graph_path"], sep=config["csv_sep"], index=False)
-        logger.info(f"✅ 预处理完成, 数据集文件保存至: {config['output_graph_path']}")
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"读取原始数据失败：文件不存在 - {str(e)}") from e
-    except Exception as e:
-        raise RuntimeError(f"处理原始数据失败：{str(e)}") from e
 
-    # 2. 切割快照（可选）
-    if config["need_cut_snap"]:
-        try:
-            from model.model_utils import split_snap_by_month, split_snap_by_uniform
+        # 切割快照（可选）
+        if config["need_cut_snap"]:
+            from data.data_utils import split_snap_by_month, split_snap_by_uniform
 
             # 方式一：按月切割快照（全量数据）
             split_snap_by_month(
@@ -70,32 +79,9 @@ def preprocess(config=None, dataset_name=None):
                 sep=config["csv_sep"],
             )
 
-        except Exception as e:
-            raise RuntimeError(f"生成快照文件失败：{str(e)}") from e
+        logger.info("✅ 数据集预处理完成")
 
-    # 3. 保存节点集
-    try:
-        node_dict = {}
-        node_dict.update({node: 1 for node in df[source_col].unique()})
-        node_dict.update({node: 1 for node in df[target_col].unique()})
-        output_graph_dir = os.path.dirname(config["output_node_path"])
-        if output_graph_dir:  # 避免空目录
-            os.makedirs(output_graph_dir, exist_ok=True)
-
-        # 1. 去重并排序
-        node_list = sorted(list(node_dict.keys()))
-        if not node_list:
-            raise ValueError("节点列表为空！")
-
-        # 2. 保存节点文件
-        df_node = pd.DataFrame(node_list, columns=["node"])
-        df_node.to_csv(
-            config["output_node_path"], sep=config["csv_sep"], index=False, header=False
-        )
-        logger.info(
-            f"✅ 节点集文件保存至: {config['output_node_path']} (节点数: {len(node_list)})"
-        )
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"数据集预处理执行失败: 文件不存在 - {str(e)}") from e
     except Exception as e:
-        raise RuntimeError(f"节点集保存失败：{str(e)}") from e
-
-    logger.info(f"🎉 数据集 {config['DATASET']} 预处理完成！")
+        raise RuntimeError(f"数据集预处理执行失败: {str(e)}") from e

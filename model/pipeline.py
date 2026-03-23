@@ -9,10 +9,10 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import average_precision_score, f1_score, roc_auc_score
 from tqdm import tqdm
-from model.IPNet import IPNet
+from model.ipnet import IPNet
 from datetime import datetime
 from gensim.models import Word2Vec
-from data.data_utils import build_nx_graph_from_config, negative_sampling
+from data.data_utils import negative_sampling
 from data.data_loader import DataLoader
 from model.model_utils import (
     set_random_seed,
@@ -23,14 +23,14 @@ from model.model_utils import (
 logger = logging.getLogger(__name__)
 
 
-def run_experiment(config: dict, data_config: dict, device: torch.device) -> dict:
+def train_and_eval(config: dict, data_config: dict, device: torch.device) -> IPNet:
     """
-    运行完整实验：加载数据 -> 训练模型 -> 测试评估 -> 保存结果
+    运行完整实验：加载、划分数据 -> 训练模型 -> 测试评估 -> 保存结果
     Args:
         config: 合并后的配置(包含训练配置和模型配置)
         data_config: 数据集配置(需先执行预处理)
     Returns:
-        dict: 包含测试指标、模型路径、耗时等结果
+        dict: 训练后的模型
     """
     cfg = config  # 简化变量名
 
@@ -55,9 +55,8 @@ def run_experiment(config: dict, data_config: dict, device: torch.device) -> dic
 
     # 1. 数据加载
     start_time = time.time()
-    graph = build_nx_graph_from_config(data_config)
-    num_nodes = len(graph.nodes())
-    data_loader = DataLoader(graph)
+    data_loader = DataLoader(data_config)
+    num_nodes = data_loader.num_nodes
 
     # 2. 交互序列提取
     worker_num = min(cfg["THREAD_NUM"], os.cpu_count() or 1)
@@ -184,38 +183,13 @@ def run_experiment(config: dict, data_config: dict, device: torch.device) -> dic
     )
 
     # 7. 测试
-    test_neg = np.array(
-        negative_sampling(
-            test_data["nodes"],
-            test_data["adj"],
-            test_data["neg_num"],
-            hard_ratio=0.0,
-            seed=cfg["SEED"],
-        )
-    )
-    np.random.shuffle(test_neg)
-    test_acc, test_ap, test_f1, test_auc = eval_one_epoch(
-        model, test_data["edges"], test_neg, cfg["BATCH_SIZE"]
-    )
-
-    # 测试结果打印优化版
-    logger.info("=" * 60)  # 醒目分隔线，突出测试结果环节
-    logger.info("📊 Final Test Results (最终测试指标)")
-    logger.info("┌─────────────┬──────────┬───────────┐")
-    logger.info("│   Metric    │  Value   │  Percent  │")
-    logger.info("├─────────────┼──────────┼───────────┤")
-    # 格式化输出每个指标，左对齐名称，右对齐数值，补充百分比（分类任务更直观）
-    logger.info(f"│  Test Acc   │ {test_acc:>8.4f} │ {test_acc * 100:>8.2f}% │")
-    logger.info(f"│  Test AUC   │ {test_auc:>8.4f} │ {test_auc * 100:>8.2f}% │")
-    logger.info(f"│  Test AP    │ {test_ap:>8.4f} │ {test_ap * 100:>8.2f}% │")
-    logger.info(f"│  Test F1    │ {test_f1:>8.4f} │ {test_f1 * 100:>8.2f}% │")
-    logger.info("└─────────────┴──────────┴───────────┘")
+    test_metrics = test_model(model, cfg, test_data=test_data)
 
     # 8. 结果保存
     train_time = time.time() - start_time
 
     # 核心完成提示
-    logger.info(f"✅ 实验结束完成 - 耗时: {train_time:.2f}s ({train_time / 60:.2f}min)")
+    logger.info(f"✅ 实验结束 - 耗时: {train_time:.2f}s ({train_time / 60:.2f}min)")
     result_path = get_result_path(cfg, final_seq_len, final_walk_num, final_walk_len)
     logger.info(f"📁 测试结果保存至：{result_path}")
     logger.info("=" * 60)
@@ -241,10 +215,10 @@ def run_experiment(config: dict, data_config: dict, device: torch.device) -> dic
             [
                 datetime.strptime(timestamp, "%Y%m%d%H%M").strftime("%Y-%m-%d %H:%M"),
                 cfg["TASK_TYPE"],
-                test_acc * 100,
-                test_auc * 100,
-                test_ap * 100,
-                test_f1 * 100,
+                test_metrics["acc"] * 100,
+                test_metrics["auc"] * 100,
+                test_metrics["ap"] * 100,
+                test_metrics["f1"] * 100,
                 train_time,
                 cfg["SEED"],
                 best_model_path,
@@ -252,14 +226,7 @@ def run_experiment(config: dict, data_config: dict, device: torch.device) -> dic
         )
 
     # 返回训练结果
-    return {
-        "test_acc": test_acc,
-        "test_auc": test_auc,
-        "test_ap": test_ap,
-        "test_f1": test_f1,
-        "train_time": train_time,
-        "config": config,
-    }
+    return model
 
 
 def train(
@@ -466,6 +433,74 @@ def train(
         logger.info(f"✅ 模型训练结束: {stop_type}")
         logger.info(f"   ├─ 最优轮次: {early_stopper.best_epoch + 1}")
         logger.info(f"   └─ 最优模型参数字典已保存至: {best_model_path}")
+
+
+def test_model(
+    model: IPNet,
+    config: dict,
+    data_config: dict = None,
+    test_data: dict = None,
+) -> dict:
+    """
+    测试模型
+
+    Args:
+        model: 待测试的IPNet模型
+        config: 训练配置
+        data_config: 数据集配置, 传入则重新构造测试数据
+        test_data: 处理好的测试数据字典(优先级高于data_config)
+
+    Returns:
+        dict: 包含测试指标的字典 {acc, ap, f1, auc}
+    """
+    # check
+    if test_data is None and data_config is None:
+        raise ValueError("必须传入 data_config 或 test_data 其中一个参数！")
+
+    # 方式1：传入data_config，自动构建测试数据
+    if test_data is None:
+        logger.info("📥 从data_config构建测试数据...")
+        data_loader = DataLoader(data_config)
+        _, _, test_data = data_loader.preprocess(
+            config["TASK_TYPE"], config["MASK_RATIO"], config["SEED"]
+        )
+
+    # 方式2：直接使用传入的test_data
+    else:
+        logger.info("📥 使用传入的test_data进行测试...")
+        required_keys = ["edges", "nodes", "adj", "neg_num"]
+        for key in required_keys:
+            if key not in test_data:
+                raise ValueError(f"test_data 缺少必要键: {key}")
+
+    test_neg = np.array(
+        negative_sampling(
+            test_data["nodes"],
+            test_data["adj"],
+            test_data["neg_num"],
+            hard_ratio=0.0,
+            seed=config["SEED"],
+        )
+    )
+    np.random.shuffle(test_neg)
+
+    test_acc, test_ap, test_f1, test_auc = eval_one_epoch(
+        model, test_data["edges"], test_neg, config["BATCH_SIZE"]
+    )
+
+    logger.info("=" * 60)
+    logger.info("📊 测试集结果")
+    logger.info("┌─────────────┬──────────┬───────────┐")
+    logger.info("│   Metric    │  Value   │  Percent  │")
+    logger.info("├─────────────┼──────────┼───────────┤")
+    logger.info(f"│  Test Acc   │ {test_acc:>8.4f} │ {test_acc * 100:>8.2f}% │")
+    logger.info(f"│  Test AUC   │ {test_auc:>8.4f} │ {test_auc * 100:>8.2f}% │")
+    logger.info(f"│  Test AP    │ {test_ap:>8.4f} │ {test_ap * 100:>8.2f}% │")
+    logger.info(f"│  Test F1    │ {test_f1:>8.4f} │ {test_f1 * 100:>8.2f}% │")
+    logger.info("└─────────────┴──────────┴───────────┘")
+    logger.info("=" * 60)
+
+    return {"acc": test_acc, "ap": test_ap, "f1": test_f1, "auc": test_auc}
 
 
 def eval_one_epoch(

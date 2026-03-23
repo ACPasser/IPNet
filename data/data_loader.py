@@ -4,10 +4,11 @@ import networkx as nx
 import numpy as np
 import warnings
 import logging
+import pandas as pd
 from joblib import Parallel, delayed
 from collections import defaultdict
 from tqdm import tqdm
-from data.data_utils import add_attr
+from data.data_utils import build_nx_graph, add_attr
 
 
 logger = logging.getLogger(__name__)
@@ -20,45 +21,41 @@ class DataLoader:
 
     def __init__(
         self,
-        graph: nx.MultiGraph,
+        data_config: str,
         train_ratio: float = 0.5,
         val_ratio: float = 0.3,
         time_attr: str = "time",
     ):
         """
         初始化数据加载器
-        :param graph: 原始多图数据(nx.MultiGraph)
+        :param data_config: 数据集配置
         :param train_ratio: 训练集边占比 (0,1)
         :param val_ratio: 验证集边占比 (0,1)
         :param time_attr: 边的时间戳属性名(默认"time")
         """
-        if not isinstance(graph, nx.MultiGraph):
-            raise TypeError(f"graph必须是nx.MultiGraph类型, 当前为{type(graph)}")
-        if graph.number_of_edges() == 0:
-            raise ValueError("输入的图为空（无任何边）")
-
-        self.graph = graph
+        self.data_config = data_config
+        self.graph = build_nx_graph(self.data_config)
+        if self.graph.number_of_edges() == 0:
+            raise ValueError("输入的图为空（无任何边）, 请检查数据完整性")
         self.time_attr = time_attr
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
 
         # 基础属性
-        self.full_nodes = list(graph.nodes())
+        self.full_nodes = set(self.graph.nodes())
         self.num_nodes = len(self.full_nodes)
 
         # 分割数据集
         self._split_train_val_test()
 
         # 图的核心统数据
-        stats = self._calculate_graph_stats(self.graph)
-
-        self.num_nodes = stats["num_nodes"]
-        self.total_edges = stats["total_edges"]
-        self.num_unique_edges = stats["num_unique_edges"]
-        self.avg_degree = stats["avg_degree"]
-        self.avg_interact_freq = stats["avg_interact_freq"]
-        self.density = stats["density"]
-        self.avg_path_len = stats["avg_path_len"]
+        # stats = self._calculate_graph_stats(self.graph)
+        # self.total_edges = stats["total_edges"]
+        # self.num_unique_edges = stats["num_unique_edges"]
+        # self.avg_degree = stats["avg_degree"]
+        # self.avg_interact_freq = stats["avg_interact_freq"]
+        # self.density = stats["density"]
+        # self.avg_path_len = stats["avg_path_len"]
 
     def _split_train_val_test(self) -> None:
         """
@@ -75,14 +72,10 @@ class DataLoader:
 
         edges_with_attr = list(self.graph.edges(data=True))  # 保留所有边属性
         self._validate_time_attr(edges_with_attr)
-
-        try:
-            sorted_edges = sorted(
-                edges_with_attr,
-                key=lambda x: x[2][self.time_attr],  # x=(u, v, attr_dict)
-            )
-        except Exception as e:
-            raise RuntimeError(f"按时间戳排序失败：{str(e)}")
+        sorted_edges = sorted(
+            edges_with_attr,
+            key=lambda x: x[2][self.time_attr],  # x=(u, v, attr_dict)
+        )
 
         # Split
         total_edges = len(sorted_edges)
@@ -120,6 +113,27 @@ class DataLoader:
         self.val_graph.add_nodes_from(train_nodes)
         self.test_graph.add_nodes_from(train_nodes)
 
+        # 保存节点划分结果
+        not_in_train_nodes = self.full_nodes - train_nodes
+
+        mapping_df = pd.read_csv(
+            self.data_config["output_nodes_mapping_path"],
+            sep=self.data_config["csv_sep"],
+        )
+        id2raw = dict(zip(mapping_df["numeric_id"], mapping_df["original_id"]))
+        train_raw_list = sorted([id2raw[nid] for nid in train_nodes])
+        not_train_raw_list = sorted([id2raw[nid] for nid in not_in_train_nodes])
+
+        df_in = pd.DataFrame({"original_id": train_raw_list, "group": "in_train"})
+        df_out = pd.DataFrame(
+            {"original_id": not_train_raw_list, "group": "not_in_train"}
+        )
+        split_df = pd.concat([df_in, df_out], ignore_index=True)
+
+        split_path = self.data_config["output_split_nodes_path"]
+        os.makedirs(os.path.dirname(split_path), exist_ok=True)
+        split_df.to_csv(split_path, index=False)
+
         # 输出统计信息
         self._print_split_stats(
             total_edges,
@@ -129,6 +143,8 @@ class DataLoader:
             len(self.train_graph.edges()),
             len(self.val_graph.edges()),
             len(self.test_graph.edges()),
+            len(train_raw_list),
+            len(not_train_raw_list),
         )
 
     def _validate_time_attr(self, edges_with_attr: list) -> None:
@@ -146,8 +162,11 @@ class DataLoader:
         train_filtered: int,
         val_filtered: int,
         test_filtered: int,
+        in_train: int,
+        not_in_train: int,
     ) -> None:
         """打印数据集分割统计信息（格式化输出）"""
+        # fmt: off
         total_filtered = train_filtered + val_filtered + test_filtered
         filtered_out = total_edges - total_filtered
 
@@ -156,25 +175,20 @@ class DataLoader:
         val_ratio_raw = val_raw / total_edges if total_edges > 0 else 0
         test_ratio_raw = test_raw / total_edges if total_edges > 0 else 0
 
-        train_ratio_filtered = (
-            train_filtered / total_filtered if total_filtered > 0 else 0
-        )
+        train_ratio_filtered = (train_filtered / total_filtered if total_filtered > 0 else 0)
         val_ratio_filtered = val_filtered / total_filtered if total_filtered > 0 else 0
-        test_ratio_filtered = (
-            test_filtered / total_filtered if total_filtered > 0 else 0
-        )
+        test_ratio_filtered = (test_filtered / total_filtered if total_filtered > 0 else 0)
 
         # 格式化输出
-        logger.info("📊 数据集划分完成")
-        logger.info(
-            f"   ├─ 原始 | 总边数: {total_edges} | 训练集: {train_raw} ({train_ratio_raw:.2%}) | 验证集: {val_raw} ({val_ratio_raw:.2%}) | 测试集: {test_raw} ({test_ratio_raw:.2%})"
-        )
-        logger.info(
-            f"   ├─ 过滤后 | 总边数: {total_filtered} | 训练集: {train_filtered} ({train_ratio_filtered:.2%}) | 验证集: {val_filtered} ({val_ratio_filtered:.2%}) | 测试集: {test_filtered} ({test_ratio_filtered:.2%})"
-        )
-        logger.info(
-            f"   └─ 过滤信息 | 共过滤掉 {filtered_out} 条边(验证/测试集含训练集外节点)"
-        )
+        logger.info(f"📊 数据集划分完成")
+        logger.info(f"   ├─ 边划分:")
+        logger.info(f"   │  - 原始 | 总边数: {total_edges} | 训练集: {train_raw} ({train_ratio_raw:.2%}) | 验证集: {val_raw} ({val_ratio_raw:.2%}) | 测试集: {test_raw} ({test_ratio_raw:.2%})")
+        logger.info(f"   │  - 过滤后 | 总边数: {total_filtered} | 训练集: {train_filtered} ({train_ratio_filtered:.2%}) | 验证集: {val_filtered} ({val_ratio_filtered:.2%}) | 测试集: {test_filtered} ({test_ratio_filtered:.2%})")
+        logger.info(f"   │  - 共过滤掉 {filtered_out}) 条边: ")
+        logger.info(f"   └─ 节点划分:")
+        logger.info(f"      - 训练集内节点数: {in_train} | 训练集外节点数: {not_in_train}")
+        logger.info(f"      - 训练内/外节点集保存至: {self.data_config['output_split_nodes_path']}")
+        # fmt: on
 
     def preprocess(
         self, task_type: str, mask_ratio: float = 0.1, seed: int = 42

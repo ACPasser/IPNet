@@ -1,14 +1,18 @@
 # 数据集预处理配置
 DATA_CONFIGS = {
     "uci": {
+        # 文件格式
+        "csv_sep": "\t",  # 文件分隔符
+        # 输入相关
         "input_file_path": "data/UCI/0.origin/graph.txt",
         "skip_rows": 2,  # 跳过行数
         "col_names": ["src_node", "tgt_node", "weight", "time"],  # 列名映射
         "node_cols": ["src_node", "tgt_node"],  # 节点（源/目标）列名
         "time_col": "time",  # 时间戳列名
-        "csv_sep": "\t",  # 文件分隔符
-        "output_graph_path": "data/UCI/0.origin/graph.csv",  # csv格式图数据保存地址
-        "output_node_path": "data/UCI/1.nodes_set/nodes.csv",  # csv格式节点集保存地址
+        # 输出相关 - 文件地址
+        "output_graph_path": "data/UCI/0.origin/graph.csv",  # 图数据(匿名ID)
+        "output_nodes_mapping_path": "data/UCI/1.nodes/nodes_mapping.csv",  # 节点映射文件
+        "output_split_nodes_path": "data/UCI/1.nodes/split_nodes.csv",  # 节点划分结果文件
         # 快照相关
         "need_cut_snap": False,  # 是否划分
         "output_snap_dir": "data/UCI/1.snapshots",  # 快照保存目录
@@ -17,14 +21,18 @@ DATA_CONFIGS = {
         "snapshots_num": 5,  # 训练集快照数量
     },
     "ia": {
+        # 文件格式
+        "csv_sep": "\t",  # 文件分隔符
+        # 输入相关
         "input_file_path": "data/IA/0.origin/graph.txt",
         "skip_rows": 0,  # 跳过行数
         "col_names": ["src_node", "tgt_node", "weight", "time"],  # 列名映射
         "node_cols": ["src_node", "tgt_node"],  # 节点（源/目标）列名
         "time_col": "time",  # 时间戳列名
-        "csv_sep": "\t",  # 文件分隔符
-        "output_graph_path": "data/IA/0.origin/graph.csv",  # csv格式图数据保存地址
-        "output_node_path": "data/IA/1.nodes_set/nodes.csv",  # csv格式节点集保存地址
+        # 输出相关 - 文件地址
+        "output_graph_path": "data/IA/0.origin/graph.csv",  # 图数据(匿名ID)
+        "output_nodes_mapping_path": "data/IA/1.nodes/nodes_mapping.csv",  # 节点映射文件
+        "output_split_nodes_path": "data/IA/1.nodes/split_nodes.csv",  # 节点划分结果文件
         # 快照相关
         "need_cut_snap": False,  # 是否划分
         "output_snap_dir": "data/IA/1.snapshots",  # 快照保存目录
@@ -33,14 +41,18 @@ DATA_CONFIGS = {
         "snapshots_num": 5,  # 训练集快照数量
     },
     "zhihu": {
+        # 文件格式
+        "csv_sep": "\t",  # 文件分隔符
+        # 输入相关
         "input_file_path": "data/ZhiHu/0.origin/graph.txt",
         "skip_rows": 1,  # 跳过行数
         "col_names": ["src_node", "tgt_node", "time"],  # 列名映射
         "node_cols": ["src_node", "tgt_node"],  # 节点（源/目标）列名
         "time_col": "time",  # 时间戳列名
-        "csv_sep": "\t",  # 文件分隔符
-        "output_graph_path": "data/ZhiHu/0.origin/graph.csv",  # csv格式图数据保存地址
-        "output_node_path": "data/ZhiHu/1.nodes_set/nodes.csv",  # csv格式节点集保存地址
+        # 输出相关 - 文件地址
+        "output_graph_path": "data/ZhiHu/0.origin/graph.csv",  # 图数据(匿名ID)
+        "output_nodes_mapping_path": "data/ZhiHu/1.nodes/nodes_mapping.csv",  # 节点映射文件
+        "output_split_nodes_path": "data/ZhiHu/1.nodes/split_nodes.csv",  # 节点划分结果文件
         # 快照相关
         "need_cut_snap": False,  # 是否划分
         "output_snap_dir": "data/ZhiHu/1.snapshots",  # 快照保存目录
@@ -82,7 +94,7 @@ DEFAULT_MODEL_CONFIG = {
     "VERSION": "mean",  # mean/att/w2v
     "FEAT_DIM": 128,
     "RNN_TYPE": "GRU",  # LSTM/GRU
-    "PADDING_NODE": 0,
+    "PADDING_NODE": 0,  # 默认，请勿修改
     "N_HEAD": 8,
     "DROPOUT": 0.3,
     # 其他参数

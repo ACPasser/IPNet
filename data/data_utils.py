@@ -215,18 +215,57 @@ def read_file_norm_ws(
     return pd.DataFrame(parsed_data, columns=col_names)
 
 
-def build_nx_graph_from_config(config: dict):
+def save_nodes_mapping(
+    nodes_iterable, output_path: str, sep: str = ",", hint: str = "全部节点"
+):
+    """
+    保存节点映射
+    :param nodes_iterable: 任何包含节点ID的可迭代对象[list, set, pd.Series等]
+    :param output_path: 映射文件保存路径
+    :param sep: 分隔符
+    """
+    try:
+        # 1. 去重并排序
+        unique_nodes = sorted(list(set(nodes_iterable)))
+
+        # 2. 构建映射
+        mapping_data = [
+            {
+                "original_id": r_id,
+                "anon_id": trans_id(r_id),
+                "numeric_id": i + 1,  # 节点ID映射（从1开始编号，0保留给padding）
+            }
+            for i, r_id in enumerate(unique_nodes)
+        ]
+
+        mapping_df = pd.DataFrame(mapping_data)
+
+        # 3. 保存
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        mapping_df.to_csv(output_path, sep=sep, index=False)
+
+        logger.info(
+            f"✅ 节点映射表({hint})已保存: {output_path} (节点总数: {len(mapping_df)})"
+        )
+        return mapping_df
+
+    except Exception as e:
+        logger.error(f"❌ 建立节点映射失败: {str(e)}")
+        raise RuntimeError(f"Node mapping failed: {e}")
+
+
+def build_nx_graph(data_config: dict):
     """
     根据配置构建 NetworkX MultiGraph 对象
     核心逻辑: 读取配置指定的图文件/节点集文件 → 节点ID映射 → 构建带时间属性的无向多重图
 
     Args:
-        config: 数据集预处理配置字典(需包含以下字段)
-                - output_graph_path: 处理后的图数据文件路径
-                - output_node_dir: 节点集文件所在目录
-                - csv_sep: 文件分隔符
-                - node_cols: 源/目标节点列名列表 [src_col, tgt_col]
-                - time_col: 时间属性列名
+        data_config: 数据集预处理配置字典(需包含以下字段)
+            - csv_sep: 文件分隔符
+            - output_graph_path: 图数据文件路径(预处理后生成)
+            - output_nodes_mapping_path: 节点映射文件路径(预处理后生成)
+            - node_cols: 源/目标节点列名列表 [src_col, tgt_col]
+            - time_col: 时间属性列名
 
     Returns:
         nx.MultiGraph: 带时间属性的无向多重图（已移除自环边）
@@ -237,113 +276,54 @@ def build_nx_graph_from_config(config: dict):
         ValueError: 图文件/节点集文件为空
     """
     required_config_keys = [
-        "output_graph_path",  # csv格式的图数据文件
-        "output_node_path",  # csv格式的节点集文件
         "csv_sep",
+        "output_graph_path",  # 图数据
+        "output_nodes_mapping_path",  # 节点映射文件
         "node_cols",
+        "time_col",
     ]
-    missing_keys = [key for key in required_config_keys if key not in config]
+    missing_keys = [key for key in required_config_keys if key not in data_config]
     if missing_keys:
         raise KeyError(f"构建NX图缺少必要配置字段: {missing_keys}")
 
-    graph_path = config["output_graph_path"]
-    node_path = config["output_node_path"]
-    csv_sep = config["csv_sep"]
-    src_col, tgt_col = config["node_cols"]
-    time_col = config.get("time_col", "time")  # 时间列名，默认'time'
+    csv_sep = data_config["csv_sep"]
+    graph_path = data_config["output_graph_path"]
+    mapping_path = data_config["output_nodes_mapping_path"]
+    src_col, tgt_col = data_config["node_cols"]
+    time_col = data_config["time_col"]
 
+    # fmt: off
     if not os.path.exists(graph_path):
-        logger.error(
-            f"图数据文件不存在(配置字段: output_graph_path): {graph_path}, 请检查是否进行过预处理!"
-        )
-        raise FileNotFoundError(
-            f"Graph file not found (config: output_graph_path): {graph_path}"
-        )
+        logger.error(f"图数据文件不存在(配置字段: output_graph_path): {graph_path}, 请检查是否进行过预处理!")
+        raise FileNotFoundError(f"Graph file not found (config: output_graph_path): {graph_path}")
 
-    if not os.path.exists(node_path):
-        logger.error(
-            f"节点集文件不存在(配置字段: output_node_dir): {node_path}, 请检查是否进行过预处理!"
-        )
-        raise FileNotFoundError(
-            f"Nodes file not found (config: output_node_dir): {node_path}"
-        )
+    if not os.path.exists(mapping_path):
+        logger.error(f"节点集文件不存在(配置字段: output_nodes_mapping_path): {mapping_path}, 请检查是否进行过预处理!")
+        raise FileNotFoundError(f"Nodes file not found (config: output_nodes_mapping_path): {mapping_path}")
 
-    # ===================== 1. 读取节点集并构建ID映射 =====================
-    try:
-        nodes_set = pd.read_csv(node_path, names=["node"])
-    except Exception as e:
-        logger.error(
-            f"读取节点集文件失败: {node_path}，分隔符: {csv_sep}，错误: {str(e)}"
-        )
-        raise RuntimeError(f"Failed to read nodes file: {node_path}") from e
+    # ===================== 1. 读取节点映射文件 =====================
+    mapping_df = pd.read_csv(mapping_path, sep=data_config["csv_sep"])
+    anon2id = dict(zip(mapping_df["anon_id"], mapping_df["numeric_id"]))
 
-    if nodes_set.empty:
-        logger.error(f"节点集文件为空: {node_path}")
-        raise ValueError("Nodes file is empty!")
+    # ===================== 2. 读取图数据并转换 =====================
+    df = pd.read_csv(graph_path, sep=csv_sep)
+    df[src_col] = df[src_col].map(anon2id)
+    df[tgt_col] = df[tgt_col].map(anon2id)
 
-    # 节点ID映射（从1开始编号，0保留给padding）
-    node2id = {node: i + 1 for i, node in enumerate(nodes_set["node"])}
-    logger.info(f"✅ 节点集加载成功: {node_path}(节点数: {len(node2id)})")
+    if df[src_col].isnull().any() or df[tgt_col].isnull().any():
+        logger.error("检测到部分匿名 ID 在映射表中不存在，请检查预处理的一致性！")
+        raise ValueError("ID mapping inconsistency detected.")
 
-    # ===================== 2. 读取图数据并校验 =====================
-    try:
-        df = pd.read_csv(graph_path, sep=csv_sep)
-    except Exception as e:
-        logger.error(
-            f"读取图数据文件失败: {graph_path}，分隔符: {csv_sep}，错误: {str(e)}"
-        )
-        raise RuntimeError(f"Failed to read graph file: {graph_path}") from e
-
-    if df.empty:
-        logger.error(f"图数据文件为空: {graph_path}")
-        raise ValueError("Graph file is empty!")
-
-    # 校验必要列（源/目标节点 + 时间列）
-    required_cols = [src_col, tgt_col]
-    if time_col not in df.columns:
-        logger.warning(f"图数据缺少时间列 {time_col}，将不添加时间属性到边")
-        edge_attr = None
-    else:
-        required_cols.append(time_col)
-        edge_attr = time_col
-
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        logger.error(
-            f"图数据缺少必要列: {graph_path}，缺失列: {missing_cols}，配置节点列: {config['node_cols']}"
-        )
-        raise KeyError(
-            f"Graph file missing columns: {missing_cols} (config node cols: {config['node_cols']})"
-        )
-
-    # 节点ID映射转换
-    def _map_node_id(nid):
-        if nid not in node2id:
-            logger.error(f"节点 {nid} 不在节点集中！节点集路径: {node_path}")
-            raise KeyError(
-                f"Node {nid} not found in nodes set (nodes file: {node_path})!"
-            )
-        return node2id[nid]
-
-    # 应用ID转换到源/目标节点列
-    try:
-        df[[src_col, tgt_col]] = df[[src_col, tgt_col]].apply(
-            lambda col: col.map(_map_node_id)
-        )
-    except KeyError:
-        raise  # 抛出原有异常，日志已在_map_node_id中记录
-    except Exception as e:
-        logger.error(f"节点ID映射转换失败: {graph_path}，错误: {str(e)}")
-        raise RuntimeError(
-            f"Failed to map node IDs for graph file: {graph_path}"
-        ) from e
+    # 转回整数类型 (防止 map 产生 float)
+    df[src_col] = df[src_col].astype(int)
+    df[tgt_col] = df[tgt_col].astype(int)
 
     # ===================== 3. 构建NetworkX图并移除自环 =====================
     graph = nx.from_pandas_edgelist(
         df,
         source=src_col,
         target=tgt_col,
-        edge_attr=edge_attr,
+        edge_attr=time_col,
         create_using=nx.MultiGraph,
     )
 
@@ -354,11 +334,12 @@ def build_nx_graph_from_config(config: dict):
         graph.remove_edges_from(self_loop_edges)
 
     # 日志输出最终结果
-    logger.info(f"✅ NX图构建成功: {graph_path}")
-    logger.info(
-        f"   ├─ 节点数量: {graph.number_of_nodes()} | 边数量: {graph.number_of_edges()}"
-    )
-    logger.info(f"   └─ 时间属性: {'包含' if edge_attr else '未包含'}")
+    logger.info("✅ NX图构建完成:")
+    logger.info(f"   ├─ 图加载路径: {graph_path}")
+    logger.info(f"   ├─ 映射表路径: {mapping_path}(节点总数: {len(mapping_df)})")
+    logger.info(f"   └─ 节点数: {graph.number_of_nodes()} | 边数: {graph.number_of_edges()}")
+
+    # fmt: on
     return graph
 
 
