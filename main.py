@@ -1,7 +1,7 @@
 import argparse
 import logging
 from data.config import DEFAULT_TRAIN_CONFIG, DEFAULT_MODEL_CONFIG, get_data_config
-from ipnet_toolkit import IPNetToolkit
+from toolkit import IPNetToolkit
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ def main(args: argparse.Namespace) -> dict:
     args_dict = vars(args)
     input_configs = {k: v for k, v in args_dict.items() if v is not None}
 
-    final_config = {
+    merged_config = {
         **get_data_config(input_configs["DATASET"]),
         **DEFAULT_TRAIN_CONFIG,
         **DEFAULT_MODEL_CONFIG,
@@ -19,7 +19,7 @@ def main(args: argparse.Namespace) -> dict:
     }
 
     # 通过 IPNetToolkit 调用
-    toolkit = IPNetToolkit(final_config)
+    toolkit = IPNetToolkit(merged_config)
     # 0. preprocess
     # toolkit.run_preprocess()
     # 1. Train
